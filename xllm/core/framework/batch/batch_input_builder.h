@@ -24,6 +24,7 @@ limitations under the License.
 #include "framework/request/mm_data.h"
 #include "framework/request/sequence.h"
 #include "runtime/forward_params.h"
+#include "util/threadpool.h"
 
 namespace xllm {
 
@@ -44,30 +45,22 @@ class BatchInputBuilder {
   ForwardInput build_forward_input(uint32_t num_decoding_tokens,
                                    uint32_t min_decoding_batch_size);
 
-  RawForwardInput build_raw_forward_input(uint32_t start_idx, uint32_t end_idx);
+  RawForwardInput build_raw_forward_input(uint32_t start_idx,
+                                          uint32_t end_idx,
+                                          ThreadPool* thread_pool = nullptr,
+                                          int32_t threads_num = 1);
 
  private:
   // Core building methods
   void process_sequences(uint32_t start_idx, uint32_t end_idx);
+  void process_sequences_multithreaded(uint32_t start_idx,
+                                       uint32_t end_idx,
+                                       ThreadPool* thread_pool,
+                                       int32_t threads_num);
   void padding_decode_batch_size(uint32_t num_decoding_tokens,
                                  uint32_t min_decoding_batch_size);
   ForwardInput state_to_forward_input();
   RawForwardInput state_to_raw_forward_input();
-
-  // Helper methods for sequence processing
-  void process_single_sequence(int32_t seq_index);
-  void extract_tokens_and_positions(Sequence* sequence,
-                                    uint32_t n_kv_cache_tokens,
-                                    uint32_t seq_len);
-  void handle_sampling_parameters(
-      Sequence* sequence,
-      uint32_t token_position,
-      uint32_t seq_len,
-      std::unordered_map<int32_t, int32_t>& adjusted_counts);
-  void setup_kv_cache_info(Sequence* sequence,
-                           uint32_t n_kv_cache_tokens,
-                           uint32_t seq_len,
-                           uint32_t q_seq_len);
 
   // State management
   struct BuilderState {
@@ -107,6 +100,29 @@ class BatchInputBuilder {
     uint32_t prefill_seq_len = 0;
     std::vector<TransferKVInfo> transfer_kv_infos;
   };
+
+  // Helper methods for sequence processing
+  void process_single_sequence(
+      int32_t seq_index,
+      BuilderState* state_ptr = nullptr,
+      std::unordered_set<int32_t>* write_block_ids_ptr = nullptr);
+  void extract_tokens_and_positions(Sequence* sequence,
+                                    uint32_t n_kv_cache_tokens,
+                                    uint32_t seq_len,
+                                    BuilderState* state_ptr = nullptr);
+  void handle_sampling_parameters(
+      Sequence* sequence,
+      uint32_t token_position,
+      uint32_t seq_len,
+      std::unordered_map<int32_t, int32_t>& adjusted_counts,
+      BuilderState* state_ptr = nullptr);
+  void setup_kv_cache_info(
+      Sequence* sequence,
+      uint32_t n_kv_cache_tokens,
+      uint32_t seq_len,
+      uint32_t q_seq_len,
+      BuilderState* state_ptr = nullptr,
+      std::unordered_set<int32_t>* write_block_ids_ptr = nullptr);
 
   // Input data
   const std::vector<Sequence*>& sequences_;

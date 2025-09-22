@@ -86,6 +86,11 @@ LLMEngine::LLMEngine(const runtime::Options& options,
     // wait up to 4 seconds for all futures to complete
     folly::collectAll(futures).within(std::chrono::seconds(4)).get();
   }
+
+  // init thread pool
+  num_threads_ = 16;
+  threadpool_ = std::make_unique<ThreadPool>(num_threads_);
+  LOG(INFO) << "Using thread pool with " << num_threads_ << " threads.";
 }
 
 bool LLMEngine::init() {
@@ -690,8 +695,10 @@ std::vector<std::vector<RawForwardInput>> LLMEngine::prepare_inputs(
         batch[dp_rank].size(), micro_batches_num);
     for (auto i = 0; i < micro_batches_num; ++i) {
       batched_inputs[dp_rank].push_back(
-          std::move(batch[dp_rank].prepare_forward_input(
-              split_seq_index[i], split_seq_index[i + 1])));
+          std::move(batch[dp_rank].prepare_forward_input(split_seq_index[i],
+                                                         split_seq_index[i + 1],
+                                                         threadpool_.get(),
+                                                         num_threads_)));
       dp_global_token_nums[i][dp_rank] =
           batched_inputs[dp_rank][i].flatten_tokens_vec.size();
       global_empty_kv_cache =
