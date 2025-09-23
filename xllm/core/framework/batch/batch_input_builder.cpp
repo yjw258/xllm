@@ -62,15 +62,13 @@ BatchInputBuilder::BatchInputBuilder(
     const std::vector<CacheBlockInfo>* copy_out_cache_block_infos,
     const std::vector<CacheBlockInfo>* swap_cache_block_infos,
     const ModelArgs* args,
-    ThreadPool* thread_pool,
-    int32_t threads_num)
+    ThreadPool* thread_pool)
     : sequences_(sequences),
       allowed_max_tokens_(allowed_max_tokens),
       input_embeddings_vec_(input_embeddings_vec),
       mm_data_vec_(mm_data_vec),
       args_(args),
       thread_pool_(thread_pool),
-      threads_num_(threads_num),
       num_sequences_(static_cast<int32_t>(sequences.size())),
       copy_in_cache_block_infos_(copy_in_cache_block_infos),
       copy_out_cache_block_infos_(copy_out_cache_block_infos),
@@ -97,8 +95,8 @@ ForwardInput BatchInputBuilder::build_forward_input(
 
 RawForwardInput BatchInputBuilder::build_raw_forward_input(uint32_t start_idx,
                                                            uint32_t end_idx) {
-  if (!thread_pool_ || threads_num_ <= 1 ||
-      end_idx - start_idx < threads_num_) {
+  if (!thread_pool_ ||
+      end_idx - start_idx < static_cast<uint32_t>(thread_pool_->size())) {
     process_sequences(start_idx, end_idx);
   } else {
     process_sequences_multithreaded(start_idx, end_idx);
@@ -115,16 +113,17 @@ void BatchInputBuilder::process_sequences(uint32_t start_idx,
 
 void BatchInputBuilder::process_sequences_multithreaded(uint32_t start_idx,
                                                         uint32_t end_idx) {
+  const size_t threads_num = thread_pool_->size();
   const size_t sequences_per_thread =
-      (end_idx - start_idx + threads_num_ - 1) / threads_num_;
+      (end_idx - start_idx + threads_num - 1) / threads_num;
 
-  BlockingCounter counter(threads_num_);
+  BlockingCounter counter(threads_num);
 
   // safe state for each thread
   std::vector<BuilderState> thread_builder_states;
   std::vector<std::unordered_set<int32_t>> thread_write_block_ids;
-  thread_builder_states.resize(threads_num_);
-  thread_write_block_ids.resize(threads_num_);
+  thread_builder_states.resize(threads_num);
+  thread_write_block_ids.resize(threads_num);
 
   // parallel processing function
   auto process_sequences_range =
@@ -140,7 +139,7 @@ void BatchInputBuilder::process_sequences_multithreaded(uint32_t start_idx,
       };
 
   // Start parallel tasks
-  for (size_t thread_idx = 0; thread_idx < threads_num_; ++thread_idx) {
+  for (size_t thread_idx = 0; thread_idx < threads_num; ++thread_idx) {
     size_t thread_start_idx = start_idx + thread_idx * sequences_per_thread;
     size_t thread_end_idx = std::min(thread_start_idx + sequences_per_thread,
                                      static_cast<size_t>(end_idx));

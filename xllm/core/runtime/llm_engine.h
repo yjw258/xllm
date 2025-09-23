@@ -144,7 +144,6 @@ class LLMEngine : public Engine {
       const std::vector<folly::Try<std::optional<RawForwardOutput>>>& results);
 
   std::unique_ptr<ThreadPool> threadpool_ = nullptr;
-  int32_t num_threads_;
 };
 
 }  // namespace xllm

@@ -41,8 +41,7 @@ class BatchInputBuilder {
       const std::vector<CacheBlockInfo>* copy_out_cache_block_infos,
       const std::vector<CacheBlockInfo>* swap_cache_block_infos,
       const ModelArgs* args,
-      ThreadPool* thread_pool = nullptr,
-      int32_t threads_num = 1);
+      ThreadPool* thread_pool = nullptr);
 
   ForwardInput build_forward_input(uint32_t num_decoding_tokens,
                                    uint32_t min_decoding_batch_size);
@@ -142,7 +141,6 @@ class BatchInputBuilder {
 
   // thread pool for multithreaded processing
   ThreadPool* thread_pool_ = nullptr;
-  int32_t threads_num_ = 1;
 };
 
 }  // namespace xllm
