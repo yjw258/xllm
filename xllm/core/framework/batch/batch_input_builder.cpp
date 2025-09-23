@@ -116,26 +116,19 @@ void BatchInputBuilder::process_sequences_multithreaded(uint32_t start_idx,
                                                         uint32_t end_idx,
                                                         ThreadPool* thread_pool,
                                                         int32_t threads_num) {
-  // check validity
-  CHECK(thread_pool && threads_num > 1 && end_idx - start_idx >= threads_num)
-      << "Invalid thread pool or thread number for multithreaded processing.";
-
-  // thread count should not be more than sequence count
-  const size_t num_threads = std::min(static_cast<size_t>(threads_num),
-                                      static_cast<size_t>(end_idx - start_idx));
   const size_t sequences_per_thread =
-      (end_idx - start_idx + num_threads - 1) / num_threads;
+      (end_idx - start_idx + threads_num - 1) / threads_num;
 
   std::vector<std::future<void>> futures;
   std::vector<std::shared_ptr<std::promise<void>>> promises;
-  futures.reserve(num_threads);
-  promises.reserve(num_threads);
+  futures.reserve(threads_num);
+  promises.reserve(threads_num);
 
   // safe state for each thread
   std::vector<BuilderState> thread_builder_states;
   std::vector<std::unordered_set<int32_t>> thread_write_block_ids;
-  thread_builder_states.resize(num_threads);
-  thread_write_block_ids.resize(num_threads);
+  thread_builder_states.resize(threads_num);
+  thread_write_block_ids.resize(threads_num);
 
   // parallel processing function
   auto process_sequences_range =
@@ -151,7 +144,7 @@ void BatchInputBuilder::process_sequences_multithreaded(uint32_t start_idx,
       };
 
   // Start parallel tasks
-  for (size_t thread_idx = 0; thread_idx < num_threads; ++thread_idx) {
+  for (size_t thread_idx = 0; thread_idx < threads_num; ++thread_idx) {
     size_t thread_start_idx = start_idx + thread_idx * sequences_per_thread;
     size_t thread_end_idx = std::min(thread_start_idx + sequences_per_thread,
                                      static_cast<size_t>(end_idx));
