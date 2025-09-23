@@ -40,23 +40,19 @@ class BatchInputBuilder {
       const std::vector<CacheBlockInfo>* copy_in_cache_block_infos,
       const std::vector<CacheBlockInfo>* copy_out_cache_block_infos,
       const std::vector<CacheBlockInfo>* swap_cache_block_infos,
-      const ModelArgs* args);
+      const ModelArgs* args,
+      ThreadPool* thread_pool = nullptr,
+      int32_t threads_num = 1);
 
   ForwardInput build_forward_input(uint32_t num_decoding_tokens,
                                    uint32_t min_decoding_batch_size);
 
-  RawForwardInput build_raw_forward_input(uint32_t start_idx,
-                                          uint32_t end_idx,
-                                          ThreadPool* thread_pool = nullptr,
-                                          int32_t threads_num = 1);
+  RawForwardInput build_raw_forward_input(uint32_t start_idx, uint32_t end_idx);
 
  private:
   // Core building methods
   void process_sequences(uint32_t start_idx, uint32_t end_idx);
-  void process_sequences_multithreaded(uint32_t start_idx,
-                                       uint32_t end_idx,
-                                       ThreadPool* thread_pool,
-                                       int32_t threads_num);
+  void process_sequences_multithreaded(uint32_t start_idx, uint32_t end_idx);
   void padding_decode_batch_size(uint32_t num_decoding_tokens,
                                  uint32_t min_decoding_batch_size);
   ForwardInput state_to_forward_input();
@@ -143,6 +139,10 @@ class BatchInputBuilder {
   const std::vector<CacheBlockInfo>* copy_in_cache_block_infos_ = nullptr;
   const std::vector<CacheBlockInfo>* copy_out_cache_block_infos_ = nullptr;
   const std::vector<CacheBlockInfo>* swap_cache_block_infos_ = nullptr;
+
+  // thread pool for multithreaded processing
+  ThreadPool* thread_pool_ = nullptr;
+  int32_t threads_num_ = 1;
 };
 
 }  // namespace xllm

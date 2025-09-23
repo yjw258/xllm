@@ -92,9 +92,10 @@ RawForwardInput Batch::prepare_forward_input(uint32_t start_idx,
                             copy_in_cache_block_infos_,
                             copy_out_cache_block_infos_,
                             swap_cache_block_infos_,
-                            nullptr);
-  return builder.build_raw_forward_input(
-      start_idx, end_idx, thread_pool, num_threads);
+                            nullptr,
+                            thread_pool,
+                            num_threads);
+  return builder.build_raw_forward_input(start_idx, end_idx);
 }
 
 void Batch::process_sample_output(const RawForwardOutput& raw_output,
