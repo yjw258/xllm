@@ -18,7 +18,6 @@ limitations under the License.
 #include <c10/core/DeviceType.h>
 #include <torch/torch.h>
 
-#include <future>
 #include <thread>
 #include <vector>
 
@@ -30,6 +29,7 @@ limitations under the License.
 #include "framework/request/sequence.h"
 #include "framework/sampling/sampling_params.h"
 #include "runtime/params_utils.h"
+#include "util/blocking_counter.h"
 #include "util/slice.h"
 #include "util/tensor_helper.h"
 #include "util/threadpool.h"
@@ -118,10 +118,7 @@ void BatchInputBuilder::process_sequences_multithreaded(uint32_t start_idx,
   const size_t sequences_per_thread =
       (end_idx - start_idx + threads_num_ - 1) / threads_num_;
 
-  std::vector<std::future<void>> futures;
-  std::vector<std::shared_ptr<std::promise<void>>> promises;
-  futures.reserve(threads_num_);
-  promises.reserve(threads_num_);
+  BlockingCounter counter(threads_num_);
 
   // safe state for each thread
   std::vector<BuilderState> thread_builder_states;
@@ -148,35 +145,23 @@ void BatchInputBuilder::process_sequences_multithreaded(uint32_t start_idx,
     size_t thread_end_idx = std::min(thread_start_idx + sequences_per_thread,
                                      static_cast<size_t>(end_idx));
 
-    if (thread_start_idx >= static_cast<size_t>(end_idx)) break;
-
-    auto promise = std::make_shared<std::promise<void>>();
-    futures.push_back(promise->get_future());
-    promises.push_back(promise);
-
     thread_pool_->schedule([process_sequences_range,
                             thread_start_idx,
                             thread_end_idx,
                             &thread_builder_states,
                             &thread_write_block_ids,
                             thread_idx,
-                            promise]() mutable {
-      try {
-        process_sequences_range(thread_start_idx,
-                                thread_end_idx,
-                                thread_builder_states[thread_idx],
-                                thread_write_block_ids[thread_idx]);
-        promise->set_value();
-      } catch (...) {
-        promise->set_exception(std::current_exception());
-      }
+                            &counter]() mutable {
+      process_sequences_range(thread_start_idx,
+                              thread_end_idx,
+                              thread_builder_states[thread_idx],
+                              thread_write_block_ids[thread_idx]);
+      counter.decrement_count();
     });
   }
 
   // Wait for all tasks to complete
-  for (auto& future : futures) {
-    future.get();
-  }
+  counter.wait();
 
   // Merge results from all threads
   for (const auto& state : thread_builder_states) {
