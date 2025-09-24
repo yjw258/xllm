@@ -33,6 +33,7 @@ limitations under the License.
 
 #include "common/global_flags.h"
 #include "common/metrics.h"
+#include "common/mspti_helper.h"
 #include "core/runtime/params_utils.h"
 #include "framework/request/sequence.h"
 #include "framework/sampling/sampling_params.h"
@@ -325,6 +326,7 @@ void WorkerService::ExecuteModel(
     const proto::BatchedForwardInputs* pb_batched_fwd_inputs,
     proto::ForwardOutput* pb_forward_output,
     ::google::protobuf::Closure* done) {
+  LLM_MSTX_RANGE();
   threadpool_.schedule([this,
                         controller,
                         pb_batched_fwd_inputs,
@@ -374,6 +376,8 @@ void WorkerService::ExecuteModel(
       auto forward_outputs = std::move(future).get();
       // convert ForwardOutput to proto::ForwardOutput which contain Tokens.
       if (forward_outputs) {
+        LLM_MSTX_RANGE();
+        auto start = std::chrono::high_resolution_clock::now();
         DCHECK(forward_outputs.has_value()) << "Failed to execute model";
         const auto& sample_output = forward_outputs.value().sample_output;
         expert_load_data = safe_to(
@@ -412,6 +416,11 @@ void WorkerService::ExecuteModel(
           // TODO(mlu): implement mlu synchronize stream
 #endif
         }
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration =
+            std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        LOG(INFO) << "Transfer output tensors to CPU, time taken: "
+                  << duration.count() << " us.";
       }
     } else {
       if (worker_->is_driver()) {

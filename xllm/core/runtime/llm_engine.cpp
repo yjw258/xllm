@@ -86,6 +86,9 @@ LLMEngine::LLMEngine(const runtime::Options& options,
     // wait up to 4 seconds for all futures to complete
     folly::collectAll(futures).within(std::chrono::seconds(4)).get();
   }
+
+  // init thread pool
+  threadpool_ = std::make_unique<ThreadPool>(16);
 }
 
 bool LLMEngine::init() {
@@ -545,8 +548,10 @@ ForwardOutput LLMEngine::step(std::vector<Batch>& batch) {
   // if it's enabled, this false here will append the fake token in
   // process_sample_output
   for (auto dp_rank = 0; dp_rank < dp_size_; ++dp_rank) {
-    batch[dp_rank].process_sample_output(raw_forward_outputs[dp_rank].value(),
-                                         false);
+    batch[dp_rank].process_sample_output(
+        // raw_forward_outputs[dp_rank].value(), false, threadpool_.get());
+        raw_forward_outputs[dp_rank].value(),
+        false);
   }
   COUNTER_ADD(engine_latency_seconds, timer.elapsed_seconds());
   return {};

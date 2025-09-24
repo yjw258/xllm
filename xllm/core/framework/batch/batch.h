@@ -26,6 +26,7 @@ limitations under the License.
 #include "framework/request/sequence.h"
 #include "framework/request/sequences_group.h"
 #include "runtime/forward_params.h"
+#include "util/threadpool.h"
 
 namespace xllm {
 
@@ -81,7 +82,8 @@ class Batch {
                              bool enable_schedule_overlap);
 
   void process_sample_output(const RawForwardOutput& raw_output,
-                             bool enable_schedule_overlap);
+                             bool enable_schedule_overlap,
+                             ThreadPool* threadpool = nullptr);
 
   // process the accepted output embedding
   void process_embedding_output(const torch::Tensor& embedding);

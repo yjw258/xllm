@@ -30,6 +30,7 @@ limitations under the License.
 #include "framework/request/sequence.h"
 #include "framework/sampling/sampling_params.h"
 #include "runtime/params_utils.h"
+#include "util/blocking_counter.h"
 #include "util/slice.h"
 #include "util/tensor_helper.h"
 #include "util/utils.h"
@@ -95,48 +96,100 @@ RawForwardInput Batch::prepare_forward_input(uint32_t start_idx,
 }
 
 void Batch::process_sample_output(const RawForwardOutput& raw_output,
-                                  bool enable_schedule_overlap) {
+                                  bool enable_schedule_overlap,
+                                  ThreadPool* thread_pool) {
   // if raw_output.outputs.size() value is 0,
   // this means all sequences are in prefill stage status.
+  auto start_time = std::chrono::high_resolution_clock::now();
   const int64_t num_seqs = raw_output.outputs.size();
+  std::vector<int64_t> output_indices;
+  output_indices.reserve(sequences_.size());
   int64_t output_idx = 0;
   for (auto* seq : sequences_) {
     if (seq->finished()) {
       output_idx++;
+      output_indices.push_back(-1);
       continue;
     }
     if (update_sequence_state(seq, enable_schedule_overlap)) {
+      output_indices.push_back(-1);
       continue;
     }
     CHECK_LT(output_idx, num_seqs);
+    output_indices.push_back(output_idx);
+    output_idx++;
+  }
 
-    const auto curr_idx = output_idx++;
-    const RawSampleOutput raw_sam_output = raw_output.outputs[curr_idx];
-    const size_t token_size = raw_sam_output.tokens.size();
-    for (size_t t_idx = 0; t_idx < token_size; t_idx++) {
-      Token t(raw_sam_output.tokens[t_idx].id);
-      if (raw_sam_output.tokens[t_idx].logprob.has_value()) {
-        t.logprob = raw_sam_output.tokens[t_idx].logprob.value();
-      }
-      t.top_tokens = raw_sam_output.tokens[t_idx].top_tokens;
-      t.top_logprobs = raw_sam_output.tokens[t_idx].top_logprobs;
-      // always append a token, maybe true or fake token
-      append_token_for_sequence(seq, t, t_idx, enable_schedule_overlap);
+  CHECK_EQ(output_idx, num_seqs);
 
-      if (raw_sam_output.tokens[t_idx].embeddings.size() > 0) {
-        torch::Tensor embeddings =
-            torch::tensor(raw_sam_output.tokens[t_idx].embeddings);
-        seq->update_embeddings(embeddings);
+  // parallel processing function
+  auto process_sequences_range = [&](size_t start_seq_idx, size_t end_seq_idx) {
+    for (size_t seq_idx = start_seq_idx; seq_idx < end_seq_idx; ++seq_idx) {
+      const int64_t output_idx = output_indices[seq_idx];
+      if (output_idx == -1) {
+        continue;
       }
-      // Speculative decoding may append an EOS token at the beginning,
-      // followed by bonus tokens, causing the sequence stopping check to fail.
-      if (seq->finished()) {
-        break;
+      const RawSampleOutput raw_sam_output = raw_output.outputs[output_idx];
+      const size_t token_size = raw_sam_output.tokens.size();
+      for (size_t t_idx = 0; t_idx < token_size; t_idx++) {
+        Token t(raw_sam_output.tokens[t_idx].id);
+        if (raw_sam_output.tokens[t_idx].logprob.has_value()) {
+          t.logprob = raw_sam_output.tokens[t_idx].logprob.value();
+        }
+        t.top_tokens = raw_sam_output.tokens[t_idx].top_tokens;
+        t.top_logprobs = raw_sam_output.tokens[t_idx].top_logprobs;
+        // always append a token, maybe true or fake token
+        append_token_for_sequence(
+            sequences_[seq_idx], t, t_idx, enable_schedule_overlap);
+
+        if (raw_sam_output.tokens[t_idx].embeddings.size() > 0) {
+          torch::Tensor embeddings =
+              torch::tensor(raw_sam_output.tokens[t_idx].embeddings);
+          sequences_[seq_idx]->update_embeddings(embeddings);
+        }
+        // Speculative decoding may append an EOS token at the beginning,
+        // followed by bonus tokens, causing the sequence stopping check to
+        // fail.
+        if (sequences_[seq_idx]->finished()) {
+          break;
+        }
       }
     }
+  };
+
+  if (thread_pool && sequences_.size() >= thread_pool->size()) {
+    // multi-thread processing
+    const size_t num_threads = thread_pool->size();
+    const size_t sequences_per_thread =
+        (sequences_.size() + num_threads - 1) / num_threads;
+    BlockingCounter counter(num_threads);
+
+    for (size_t thread_idx = 0; thread_idx < num_threads; ++thread_idx) {
+      const size_t start_seq_idx = thread_idx * sequences_per_thread;
+      const size_t end_seq_idx =
+          std::min(start_seq_idx + sequences_per_thread, sequences_.size());
+
+      thread_pool->schedule([&, start_seq_idx, end_seq_idx]() {
+        process_sequences_range(start_seq_idx, end_seq_idx);
+        counter.decrement_count();
+      });
+    }
+    // wait for all threads to complete
+    counter.wait();
+  } else {
+    // single thread processing
+    process_sequences_range(0, sequences_.size());
   }
-  CHECK_EQ(output_idx, num_seqs);
+
   process_beam_search();
+
+  auto end_time = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(
+      end_time - start_time);
+
+  LOG(INFO) << "Using " << (thread_pool ? thread_pool->size() : 1)
+            << " threads to process sample output for " << sequences_.size()
+            << " sequences, time taken: " << duration.count() << " us.";
 }
 
 void Batch::process_sample_output(const SampleOutput& sample_output,
