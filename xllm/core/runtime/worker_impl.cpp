@@ -96,6 +96,7 @@ WorkerImpl::WorkerImpl(const ParallelArgs& parallel_args,
   // TODO(mlu): implement mlu init context
 #endif
   sampler_ = std::make_unique<Sampler>();
+  beam_searcher_ = std::make_unique<BeamSearcher>();
 }
 
 WorkerImpl::~WorkerImpl() = default;

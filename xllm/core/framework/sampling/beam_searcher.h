@@ -1,0 +1,47 @@
+/* Copyright 2025 The xLLM Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://github.com/jd-opensource/xllm/blob/main/LICENSE
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+==============================================================================*/
+
+#pragma once
+#include <torch/torch.h>
+#include <torch/types.h>
+
+#if defined(USE_NPU)
+#include "kernels/npu/xllm_ops/beam_search.h"
+#endif
+
+namespace xllm {
+class BeamSearcher {
+ public:
+  BeamSearcher() = default;
+
+  // operator() allows us to use the module as a function.
+  template <typename... Args>
+  auto operator()(Args&&... args) const {
+    return this->forward(::std::forward<Args>(args)...);
+  }
+
+  // token_ids: [num_seq, output_len]
+  // log_probs: [num_seq]
+  // top_tokens: [num_seq, top_k]
+  // top_probs: [num_seq, top_k]
+  // src_idx: [num_seq]
+  void forward(torch::Tensor& token_ids,
+               const torch::Tensor& log_probs,
+               const torch::Tensor& top_tokens,
+               const torch::Tensor& top_probs,
+               torch::Tensor& src_idx) const;
+}
+
+}  // namespace xllm

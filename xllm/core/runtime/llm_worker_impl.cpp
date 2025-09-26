@@ -180,7 +180,12 @@ std::optional<ForwardOutput> LLMWorkerImpl::step(
   if (concated_sampling_params.selected_token_idxes.defined()) {
     sample_output = sampler_->forward(logits, concated_sampling_params);
     output.logits = logits;
-
+    torch::Tensor src_idx;
+    // beam_searcher_->forward(concated_sampling_params.token_ids,
+    //                         sample_output.log_probs,
+    //                         sample_output.top_tokens,
+    //                         sample_output.top_probs,
+    //                         src_idx);
     // if running in multi_stream_parallel step, all micro batches
     // should be in same prefill stage, so, to judge empty_kv_cache,
     // just use micro batch 0 here
