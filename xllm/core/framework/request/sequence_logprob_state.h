@@ -57,6 +57,10 @@ class LogprobState {
     return logprobs_;
   }
 
+  float get_logprob_sum() const { return logprob_sum_; }
+
+  void set_logprob_sum(float logprob_sum) { logprob_sum_ = logprob_sum; }
+
  private:
   int64_t num_prompt_tokens_;
   std::vector<std::optional<float>> logprobs_;
@@ -66,6 +70,7 @@ class LogprobState {
   // top k log probs
   std::vector<std::vector<int64_t>> top_tokens_;
   std::vector<std::vector<float>> top_logprobs_;
+  float logprob_sum_ = 0.0;
 };
 
 }  // namespace xllm

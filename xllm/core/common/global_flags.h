@@ -179,3 +179,6 @@ DECLARE_int32(max_global_tpot_ms);
 
 // dit
 DECLARE_int32(max_requests_per_batch);
+
+// beam search
+DECLARE_bool(enable_beam_search_npu);

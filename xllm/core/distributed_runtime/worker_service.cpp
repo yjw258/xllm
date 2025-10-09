@@ -33,6 +33,7 @@ limitations under the License.
 
 #include "common/global_flags.h"
 #include "common/metrics.h"
+#include "common/mspti_helper.h"
 #include "core/runtime/params_utils.h"
 #include "framework/request/sequence.h"
 #include "framework/sampling/sampling_params.h"
@@ -331,6 +332,7 @@ void WorkerService::ExecuteModel(
                         pb_forward_output,
                         done]() mutable {
     brpc::ClosureGuard done_guard(done);
+    MstxRange("WorkerService::ExecuteModel");
 #if defined(USE_NPU)
     c10_npu::SetDevice(device_.index());
 #elif defined(USE_MLU)
@@ -347,8 +349,15 @@ void WorkerService::ExecuteModel(
       proto_to_forward_input(&(pb_batched_fwd_inputs->micro_inputs()[i]),
                              forward_input,
                              options_.num_decoding_tokens());
+      // LOG(INFO) << "worker_service forward_input.logprobs_sum.numel: "
+      //           << forward_input.logprobs_sum.numel();
       batched_fwd_inputs.micro_inputs.push_back(std::move(forward_input));
     }
+
+    // LOG(INFO) << "worker_service all logprobs_sum_vec size: ";
+    // for (auto& input : batched_fwd_inputs.micro_inputs) {
+    //   LOG(INFO) << input.logprobs_sum.numel();
+    // }
 
     // concat sampling parameters here for executing sample together
     batched_fwd_inputs.concated_sampling_params =
@@ -358,6 +367,20 @@ void WorkerService::ExecuteModel(
           batched_fwd_inputs.micro_inputs[i].sampling_params);
     }
 
+    // concat logprobs_sum for beam search
+    batched_fwd_inputs.logprobs_sum =
+        batched_fwd_inputs.micro_inputs[0].logprobs_sum;
+    // LOG(INFO) << "before sum: batched_fwd_inputs.logprobs_sum.numel: "
+    //           << batched_fwd_inputs.logprobs_sum.numel();
+    for (auto i = 1; i < micro_batches_num; ++i) {
+      batched_fwd_inputs.logprobs_sum =
+          torch::cat({batched_fwd_inputs.logprobs_sum,
+                      batched_fwd_inputs.micro_inputs[i].logprobs_sum},
+                     0);
+    }
+    // LOG(INFO) << "after sum: batched_fwd_inputs.logprobs_sum.numel: "
+    //           << batched_fwd_inputs.logprobs_sum.numel();
+
     // model output
     torch::Tensor next_tokens;
     torch::Tensor logprobs;
@@ -365,6 +388,10 @@ void WorkerService::ExecuteModel(
     torch::Tensor top_logprobs;
     torch::Tensor embeddings;
     torch::Tensor expert_load_data;
+    // for beam search
+    torch::Tensor src_seq_idxes;
+    torch::Tensor out_tokens;
+    torch::Tensor out_logprobs;
     int32_t prepared_layer_id = -1;
 
     // execute model
@@ -374,8 +401,11 @@ void WorkerService::ExecuteModel(
       auto forward_outputs = std::move(future).get();
       // convert ForwardOutput to proto::ForwardOutput which contain Tokens.
       if (forward_outputs) {
+        MstxRange("WorkerService::ExecuteModel D2H memcpy");
         DCHECK(forward_outputs.has_value()) << "Failed to execute model";
         const auto& sample_output = forward_outputs.value().sample_output;
+        const auto& beam_search_output =
+            forward_outputs.value().beam_search_output;
         expert_load_data = safe_to(
             forward_outputs.value().expert_load_data, torch::kCPU, true);
         prepared_layer_id = forward_outputs.value().prepared_layer_id;
@@ -399,11 +429,28 @@ void WorkerService::ExecuteModel(
           if (next_tokens.defined()) {
             // [num_seq]
             logprobs = safe_to(sample_output.logprobs, torch::kCPU, true);
-            // [num_seq, topk]
-            top_tokens = safe_to(sample_output.top_tokens, torch::kCPU, true);
-            // [num_seq, topk]
-            top_logprobs =
-                safe_to(sample_output.top_logprobs, torch::kCPU, true);
+            if (!beam_search_output.src_seq_idxes.defined()) {
+              // for beam search on cpu
+              // [num_seq, topk]
+              top_tokens = safe_to(sample_output.top_tokens, torch::kCPU, true);
+              // [num_seq, topk]
+              top_logprobs =
+                  safe_to(sample_output.top_logprobs, torch::kCPU, true);
+            }
+          }
+          // for beam search
+          // [num_seq]
+          src_seq_idxes =
+              safe_to(beam_search_output.src_seq_idxes, torch::kCPU, true);
+          if (src_seq_idxes.defined()) {
+            // [num_seq]
+            out_tokens =
+                safe_to(beam_search_output.out_tokens, torch::kCPU, true);
+            // [num_seq]
+            out_logprobs =
+                safe_to(beam_search_output.out_logprobs,
+                        torch::dtype(torch::kFloat32).device(torch::kCPU),
+                        true);
           }
 #if defined(USE_NPU)
           aclrtSynchronizeStream(
@@ -441,6 +488,9 @@ void WorkerService::ExecuteModel(
                             embeddings,
                             expert_load_data,
                             prepared_layer_id,
+                            src_seq_idxes,
+                            out_tokens,
+                            out_logprobs,
                             pb_forward_output);
     COUNTER_ADD(worker_service_latency_seconds, timer.elapsed_seconds());
   });
@@ -467,6 +517,8 @@ void WorkerService::GetLastStepResult(
           const auto& expert_load_data = safe_to(
               forward_outputs.value().expert_load_data, torch::kCPU, true);
           int32_t prepared_layer_id = forward_outputs.value().prepared_layer_id;
+          const auto& beam_search_output =
+              forward_outputs.value().beam_search_output;
 #if defined(USE_NPU)
           c10::StreamGuard streamGuard(
               npu_stream_helper_->D2H_memcpy_stream.unwrap());
@@ -491,6 +543,17 @@ void WorkerService::GetLastStepResult(
             // [num_seq, topk]
             const auto& top_logprobs =
                 safe_to(sample_output.top_logprobs, torch::kCPU, true);
+            // [num_seq]
+            const auto& src_seq_idxes =
+                safe_to(beam_search_output.src_seq_idxes, torch::kCPU, true);
+            // [num_seq]
+            const auto& out_tokens =
+                safe_to(beam_search_output.out_tokens, torch::kCPU, true);
+            // [num_seq]
+            const auto& out_logprobs =
+                safe_to(beam_search_output.out_logprobs,
+                        torch::dtype(torch::kFloat32).device(torch::kCPU),
+                        true);
 #if defined(USE_NPU)
             aclrtSynchronizeStream(
                 npu_stream_helper_->D2H_memcpy_stream.stream());
@@ -505,6 +568,9 @@ void WorkerService::GetLastStepResult(
                                     embeddings,
                                     expert_load_data,
                                     prepared_layer_id,
+                                    src_seq_idxes,
+                                    out_tokens,
+                                    out_logprobs,
                                     pb_forward_output);
           }
         }

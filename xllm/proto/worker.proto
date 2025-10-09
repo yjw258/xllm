@@ -129,6 +129,7 @@ message RequestSamplingParam {
   int64 top_logprobs = 8;
   bool do_sample = 9;
   bool is_embeddings = 10;
+  int32 beam_width = 11;
 }
 
 message UniqueTokenIds {
@@ -189,6 +190,8 @@ message ForwardInput {
   repeated int32 src_block_indices = 31;
   repeated int32 dst_block_indices = 32;
   repeated int32 cum_sum = 33;
+  // params for beam search
+  repeated float logprobs_sum_vec = 34;
 }
 
  message BatchedForwardInputs {
@@ -218,6 +221,9 @@ message ForwardOutput {
   repeated SquenceOutput outputs = 2;
   repeated int64 expert_load_data = 3;
   int32 prepared_layer_id = 4;
+  repeated int32 src_seq_idxes = 5;
+  repeated int32 out_tokens = 6;
+  repeated float out_logprobs = 7;
 }
 
 // master create Collective service

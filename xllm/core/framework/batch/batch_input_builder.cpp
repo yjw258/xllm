@@ -145,6 +145,18 @@ void BatchInputBuilder::process_single_sequence(int32_t seq_index) {
     state_.prefill_seq_len++;
   }
   state_.embedding_ids.push_back(sequence->get_embedding_id());
+
+  // add logprobs_sum for beam search
+  // LOG(INFO) << "sequence " << seq_index
+  //           << " beam width: " << sequence->sampling_param()->beam_width;
+  // LOG(INFO) << "sequence " << seq_index
+  //           << " num_generated_tokens: " << sequence->num_generated_tokens();
+  if (FLAGS_enable_beam_search_npu &&
+      sequence->sampling_param()->beam_width > 1 &&
+      sequence->num_generated_tokens() > 0) {
+    state_.logprobs_sum_vec.push_back(
+        sequence->logprob_state()->get_logprob_sum());
+  }
 }
 
 void BatchInputBuilder::extract_tokens_and_positions(Sequence* sequence,
@@ -406,6 +418,12 @@ RawForwardInput BatchInputBuilder::state_to_raw_forward_input() {
   raw_forward_input.prefill_seq_len = state_.prefill_seq_len;
 
   raw_forward_input.embedding_ids = std::move(state_.embedding_ids);
+  // add logprobs_sum for beam search
+  if (state_.logprobs_sum_vec.size() > 0) {
+    raw_forward_input.logprobs_sum_vec = std::move(state_.logprobs_sum_vec);
+  }
+  // LOG(INFO) << "logprobs_sum_vec size: "
+  //           << raw_forward_input.logprobs_sum_vec.size();
 
   if (mm_data_vec_.size() != 0) {
     MMData mm_data = MMData::batch(mm_data_vec_);

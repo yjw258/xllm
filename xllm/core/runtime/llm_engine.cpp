@@ -34,6 +34,7 @@ limitations under the License.
 #include "common/device_monitor.h"
 #include "common/global_flags.h"
 #include "common/metrics.h"
+#include "common/mspti_helper.h"
 #include "framework/model/model_args.h"
 #include "framework/model_loader.h"
 #include "framework/parallel_state.h"
@@ -495,6 +496,7 @@ bool LLMEngine::unlink_cluster(const std::vector<uint64_t>& cluster_ids,
 }
 
 ForwardOutput LLMEngine::step(std::vector<Batch>& batch) {
+  LLM_MSTX_RANGE();
   if (worker_clients_.empty()) {
     // empty worker, return
     return {};
@@ -668,6 +670,7 @@ uint32_t determine_micro_batches_num(const std::vector<Batch>& batch) {
 
 std::vector<std::vector<RawForwardInput>> LLMEngine::prepare_inputs(
     std::vector<Batch>& batch) {
+  LLM_MSTX_RANGE();
   // this is a nested 2-D inputs, with outer dimension indicates dp batches,
   // inner dimension indicates multi-stream parallel micro batches
   std::vector<std::vector<RawForwardInput>> batched_inputs(dp_size_);

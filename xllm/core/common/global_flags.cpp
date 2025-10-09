@@ -332,3 +332,8 @@ DEFINE_bool(
 
 // --- for dit ---
 DEFINE_int32(max_requests_per_batch, 1, "Max number of request per batch.");
+
+// --- for beam search ---
+DEFINE_bool(enable_beam_search_npu,
+            false,
+            "Whether to enable beam search on npu.");

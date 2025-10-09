@@ -48,6 +48,7 @@ void SamplingParameters::init(
   bool logprobs = false;
   int64_t max_top_logprobs = 0;
   bool is_embeddings = false;
+  int32_t beam_width = 0;
   for (const auto* p : req_sampling_params) {
     frequency_penalties.push_back(p->frequency_penalty);
     presence_penalties.push_back(p->presence_penalty);
@@ -58,6 +59,9 @@ void SamplingParameters::init(
     logprobs = logprobs || p->logprobs;
     is_embeddings = is_embeddings || p->is_embeddings;
     max_top_logprobs = std::max(max_top_logprobs, p->top_logprobs);
+    if (p->beam_width > 0) {
+      use_beam_search = true;
+    }
   }
 
   bool need_token_stats = false;

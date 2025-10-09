@@ -106,6 +106,9 @@ class Batch {
 
   void process_beam_search();
 
+  void process_beam_search_output(const RawForwardOutput& raw_output,
+                                  bool enable_schedule_overlap);
+
   std::vector<Sequence*> sequences_;
   std::vector<SequencesGroup*> sequence_groups_;
   std::vector<CacheBlockInfo>* copy_in_cache_block_infos_ = nullptr;

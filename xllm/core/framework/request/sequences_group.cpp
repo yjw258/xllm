@@ -152,6 +152,8 @@ void SequencesGroup::process_beam_search() {
         result.back()->update_token(last_token_idx, new_token);
         result.back()->kv_state().set_src_blocks(src_blocks,
                                                  /*need_swap*/ idx != 0);
+        result.back()->logprob_state()->set_logprob_sum(
+            seq->logprob_state()->get_logprob_sum() + top_logprobs[idx]);
       }
     }
     sequences_ = std::move(result);

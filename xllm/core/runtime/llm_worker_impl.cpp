@@ -36,6 +36,7 @@ limitations under the License.
 
 #include "common/device_monitor.h"
 #include "common/metrics.h"
+#include "common/mspti_helper.h"
 #include "common/types.h"
 #include "core/common/global_flags.h"
 #include "framework/kv_cache/kv_cache.h"
@@ -80,6 +81,7 @@ bool LLMWorkerImpl::init_model(ModelContext& context) {
 
 std::optional<ForwardOutput> LLMWorkerImpl::step(
     const BatchedForwardInputs& inputs) {
+  LLM_MSTX_RANGE();
 #if defined(USE_NPU)
   c10_npu::SetDevice(device_.index());
 #elif defined(USE_MLU)
@@ -181,6 +183,15 @@ std::optional<ForwardOutput> LLMWorkerImpl::step(
     sample_output = sampler_->forward(logits, concated_sampling_params);
     output.logits = logits;
 
+    if (concated_sampling_params.use_beam_search &&
+        inputs.logprobs_sum.numel() > 0) {
+      // beam search
+      auto top_tokens_int32 = sample_output.top_tokens.to(torch::kInt32);
+
+      BeamSearchOutput beam_search_output = beam_searcher_->forward(
+          inputs.logprobs_sum, top_tokens_int32, sample_output.top_logprobs);
+      output.beam_search_output = beam_search_output;
+    }
     // if running in multi_stream_parallel step, all micro batches
     // should be in same prefill stage, so, to judge empty_kv_cache,
     // just use micro batch 0 here

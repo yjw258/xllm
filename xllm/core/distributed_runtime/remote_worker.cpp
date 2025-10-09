@@ -28,6 +28,7 @@ limitations under the License.
 
 #include "common/global_flags.h"
 #include "common/metrics.h"
+#include "common/mspti_helper.h"
 #include "framework/kv_cache/kv_cache.h"
 #include "framework/model/model_input_params.h"
 #include "framework/parallel_state.h"
@@ -274,6 +275,7 @@ folly::SemiFuture<std::optional<RawForwardOutput>> RemoteWorker::step_async(
   auto future = promise.getSemiFuture();
   threadpool_.schedule(
       [this, inputs = inputs, promise = std::move(promise)]() mutable {
+        MstxRange("RemoteWorker::step");
         // 1. convert to proto::BatchedForwardInputs
         proto::BatchedForwardInputs pb_batched_fwd_inputs;
         std::vector<proto::ForwardInput> batched_fwd_inputs_vec;
@@ -298,7 +300,7 @@ folly::SemiFuture<std::optional<RawForwardOutput>> RemoteWorker::step_async(
 
 void ExecuteModelClosure::Run() {
   std::unique_ptr<ExecuteModelClosure> self_guard(this);
-
+  LLM_MSTX_RANGE();
   if (cntl.Failed()) {
     LOG(ERROR) << "Execute_model_async failed. Error code : "
                << cntl.ErrorCode() << ", error message : " << cntl.ErrorText();
