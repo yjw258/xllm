@@ -136,7 +136,8 @@ void Batch::process_sample_output(const RawForwardOutput& raw_output,
     }
   }
   CHECK_EQ(output_idx, num_seqs);
-  process_beam_search();
+  // process_beam_search();
+  process_beam_search_output(raw_output, enable_schedule_overlap);
 }
 
 void Batch::process_sample_output(const SampleOutput& sample_output,
@@ -254,6 +255,92 @@ void Batch::process_embedding_output(const torch::Tensor& output_embedding) {
 void Batch::process_beam_search() {
   for (auto* sequence_group : sequence_groups_) {
     sequence_group->process_beam_search();
+  }
+}
+
+void Batch::process_beam_search_output(const RawForwardOutput& raw_output,
+                                       bool enable_schedule_overlap) {
+  const int32_t beam_width = sequence_groups_.empty()
+                                 ? 1
+                                 : sequence_groups_[0]
+                                       ->get_sequence_params()
+                                       .sampling_param->beam_width;
+  // LOG(INFO) << "Beam width: " << beam_width;
+  if (beam_width <= 1) {
+    return;
+  }
+
+  if (enable_schedule_overlap) {
+    LOG(ERROR) << "Not support enable_schedule_overlap in beam search";
+    return;
+  }
+
+  // if raw_output.src_seq_idxes is empty, no need to filter sequences
+  if (raw_output.src_seq_idxes.empty()) {
+    // LOG(INFO) << "No need to filter sequences in beam search, directly call "
+    //              "process_beam_search";
+    process_beam_search();
+  } else {
+    CHECK_EQ(raw_output.src_seq_idxes.size(), sequences_.size());
+    CHECK_EQ(raw_output.out_tokens.size(), sequences_.size());
+    CHECK_EQ(raw_output.out_logprobs.size(), sequences_.size());
+    // LOG(INFO) << "src_seq_idxes_host:";
+    // for (size_t i = 0; i < raw_output.src_seq_idxes.size(); i++) {
+    //   LOG(INFO) << raw_output.src_seq_idxes[i];
+    // }
+    // LOG(INFO) << "out_tokens_host:";
+    // for (size_t i = 0; i < raw_output.out_tokens.size(); i++) {
+    //   LOG(INFO) << raw_output.out_tokens[i];
+    // }
+    // LOG(INFO) << "out_logprobs_host:";
+    // for (size_t i = 0; i < raw_output.out_logprobs.size(); i++) {
+    //   LOG(INFO) << raw_output.out_logprobs[i];
+    // }
+    auto update_for_sequence = [&](size_t work_id, size_t num_tasks_per) {
+      std::unordered_set<int32_t> seq_idx_set;
+      for (size_t i = 0; i < num_tasks_per; i++) {
+        size_t task_id = work_id * num_tasks_per + i;
+        int32_t src_seq_idx = raw_output.src_seq_idxes[task_id];
+        CHECK_LE(src_seq_idx, sequences_.size());
+        auto& base_seq = sequences_[task_id];
+        auto& src_seq = sequences_[src_seq_idx];
+
+        for (size_t token_idx = base_seq->num_prompt_tokens();
+             token_idx < base_seq->num_tokens() - 1;
+             token_idx++) {
+          Token new_token(src_seq->tokens()[token_idx]);
+          new_token.logprob =
+              src_seq->logprob_state()->get_logprobs()[token_idx];
+          base_seq->update_token(token_idx, new_token);
+        }
+
+        Token new_token(raw_output.out_tokens[task_id]);
+        float base_logprob =
+            src_seq->get_average_logprob() * src_seq->num_generated_tokens();
+        const auto& last_logprob_opt =
+            src_seq->logprob_state()->get_logprobs().back();
+        if (last_logprob_opt.has_value()) {
+          base_logprob -= last_logprob_opt.value();
+        }
+        new_token.logprob = raw_output.out_logprobs[task_id] - base_logprob;
+        base_seq->update_token(base_seq->num_tokens() - 1, new_token);
+
+        bool need_swap = false;
+        if (seq_idx_set.find(src_seq_idx) != seq_idx_set.end()) {
+          need_swap = true;
+        } else {
+          seq_idx_set.insert(src_seq_idx);
+        }
+
+        auto src_blocks = src_seq->kv_state().kv_blocks();
+        base_seq->kv_state().set_src_blocks(src_blocks, need_swap);
+      }
+    };
+
+    for (size_t work_id = 0; work_id < sequences_.size();
+         work_id += beam_width) {
+      update_for_sequence(work_id, beam_width);
+    }
   }
 }
 }  // namespace xllm

@@ -23,6 +23,7 @@ limitations under the License.
 
 #include "common/types.h"
 #include "framework/model/model_input_params.h"
+#include "framework/sampling/beam_searcher.h"
 #include "framework/sampling/sampling_params.h"
 
 namespace xllm {
@@ -95,6 +96,7 @@ struct ForwardInput {
     inputs.sampling_params = sampling_params.to(device, dtype);
     inputs.transfer_kv_infos = transfer_kv_infos;
     inputs.eplb_info = eplb_info;
+    inputs.logprobs_sum = safe_to(logprobs_sum, device, true);
     return inputs;
   }
   // flatten token ids
@@ -106,6 +108,8 @@ struct ForwardInput {
   // kv info for disaggregated prefill/decode
   std::vector<TransferKVInfo> transfer_kv_infos;
   EplbInfo eplb_info;
+  // for beam search
+  torch::Tensor logprobs_sum;
 };
 
 // output after forward execution
@@ -123,6 +127,7 @@ struct ForwardOutput {
   torch::Tensor expert_load_data;
 
   int32_t prepared_layer_id;
+  BeamSearchOutput beam_search_output;
 };
 
 // Model input with raw data, which will be
@@ -164,6 +169,8 @@ struct RawForwardInput {
   std::vector<int32_t> src_block_indices;
   std::vector<int32_t> dst_block_indices;
   std::vector<int32_t> cum_sum;
+  // logprobs_sum
+  std::vector<float> logprobs_sum_vec;
 };
 
 struct RawSampleOutput {
@@ -173,12 +180,17 @@ struct RawSampleOutput {
 struct RawForwardOutput {
   std::vector<RawSampleOutput> outputs;  // num seqs
   std::vector<int64_t> expert_load_data;
+  std::vector<int32_t> src_seq_idxes;
+  std::vector<int32_t> out_tokens;
+  std::vector<float> out_logprobs;
   int32_t prepared_layer_id;
 };
 
 struct BatchedForwardInputs {
   std::vector<ForwardInput> micro_inputs;
   SamplingParameters concated_sampling_params;
+  // for beam search
+  torch::Tensor logprobs_sum;
 };
 
 }  // namespace xllm

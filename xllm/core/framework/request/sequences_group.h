@@ -50,6 +50,9 @@ class SequencesGroup {
 
   std::vector<std::unique_ptr<Sequence>>& sequences() { return sequences_; }
 
+  // get sequence params
+  const SequenceParams& get_sequence_params() const { return sequence_params_; }
+
   int32_t dp_rank() { return sequences_[0]->dp_rank(); }
 
  private:

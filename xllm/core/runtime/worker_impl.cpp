@@ -96,6 +96,7 @@ WorkerImpl::WorkerImpl(const ParallelArgs& parallel_args,
   // TODO(mlu): implement mlu init context
 #endif
   sampler_ = std::make_unique<Sampler>();
+  beam_searcher_ = std::make_unique<BeamSearcher>();
 }
 
 WorkerImpl::~WorkerImpl() = default;
@@ -449,6 +450,8 @@ void WorkerImpl::prepare_work_before_execute(
   }
   processed_inputs.concated_sampling_params =
       inputs.concated_sampling_params.to(device_, dtype_);
+  processed_inputs.logprobs_sum =
+      inputs.logprobs_sum.to(torch::kFloat32).to(device_);
   aclrtSynchronizeStream(npu_stream_helper_->H2D_memcpy_stream.stream());
 #endif
 }

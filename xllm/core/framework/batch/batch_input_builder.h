@@ -103,6 +103,9 @@ class BatchInputBuilder {
     std::vector<int32_t> new_token_slot_ids;
     std::vector<std::vector<int32_t>> block_tables_vec;
 
+    // for beam search
+    std::vector<float> logprobs_sum_vec;
+
     // Additional data
     std::vector<int32_t> embedding_ids;
     uint32_t prefill_seq_len = 0;

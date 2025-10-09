@@ -180,7 +180,26 @@ std::optional<ForwardOutput> LLMWorkerImpl::step(
   if (concated_sampling_params.selected_token_idxes.defined()) {
     sample_output = sampler_->forward(logits, concated_sampling_params);
     output.logits = logits;
-
+    LOG(INFO) << "use beam search: "
+              << concated_sampling_params.use_beam_search;
+    LOG(INFO) << "inputs.logprobs_sum.numel: " << inputs.logprobs_sum.numel();
+    if (concated_sampling_params.use_beam_search &&
+        inputs.logprobs_sum.numel() > 0) {
+      // beam search
+      auto top_tokens_int32 = sample_output.top_tokens.to(torch::kInt32);
+      // LOG(INFO) << "logprobs_sum_device: " << inputs.logprobs_sum;
+      // LOG(INFO) << "top_tokens_device: " << flat_top_tokens;
+      // LOG(INFO) << "top_logprobs_device: " << flat_top_logprobs;
+      BeamSearchOutput beam_search_output = beam_searcher_->forward(
+          inputs.logprobs_sum, top_tokens_int32, sample_output.top_logprobs);
+      output.beam_search_output = beam_search_output;
+      // LOG(INFO) << "beam search out_tokens_device: "
+      //           << output.beam_search_output.out_tokens;
+      // LOG(INFO) << "beam search out_logprobs_device: "
+      //           << output.beam_search_output.out_logprobs;
+      // LOG(INFO) << "beam search src_seq_idxes_device: "
+      //           << output.beam_search_output.src_seq_idxes;
+    }
     // if running in multi_stream_parallel step, all micro batches
     // should be in same prefill stage, so, to judge empty_kv_cache,
     // just use micro batch 0 here

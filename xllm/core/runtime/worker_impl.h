@@ -33,6 +33,7 @@ limitations under the License.
 #include "framework/model/causal_lm.h"
 #include "framework/model/embedding_lm.h"
 #include "framework/model/model_input_params.h"
+#include "framework/sampling/beam_searcher.h"
 #include "framework/sampling/sampler.h"
 #include "framework/state_dict/state_dict.h"
 #include "memory"
@@ -217,6 +218,8 @@ class WorkerImpl {
   std::unique_ptr<Executor> model_executor_;
 
   std::unique_ptr<Sampler> sampler_;
+
+  std::unique_ptr<BeamSearcher> beam_searcher_;
 
   std::unique_ptr<EplbExecutor> eplb_executor_;
 
