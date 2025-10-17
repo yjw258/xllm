@@ -57,6 +57,12 @@ class LogprobState {
     return logprobs_;
   }
 
+  void set_acc_logprob(float acc_logprob) { acc_logprob_ = acc_logprob; }
+
+  void set_last_acc_token_idx(int64_t last_acc_token_idx) {
+    last_acc_token_idx_ = last_acc_token_idx;
+  }
+
  private:
   int64_t num_prompt_tokens_;
   std::vector<std::optional<float>> logprobs_;

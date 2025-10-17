@@ -280,6 +280,9 @@ void SequencesGroup::process_beam_search() {
         seq_idx_set.insert(c.seq_index);
       }
 
+      base_seq->logprob_state()->set_acc_logprob(c.logprob_sum);
+      base_seq->logprob_state()->set_last_acc_token_idx(base_seq->num_tokens());
+
       auto src_blocks = src_seq->kv_state().kv_blocks();
       base_seq->kv_state().set_src_blocks(src_blocks, need_swap);
     }
