@@ -94,6 +94,10 @@ class Batch {
   void process_sample_output(const RawForwardOutput& raw_output,
                              bool replace_fake_token);
 
+  // process output for beam search kernel
+  void process_beam_search_output(const RawForwardOutput& raw_output,
+                                  bool replace_fake_token);
+
   // process the accepted output embedding
   void process_embedding_output(const torch::Tensor& embedding);
 

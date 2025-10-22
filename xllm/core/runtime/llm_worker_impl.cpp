@@ -58,6 +58,10 @@ bool LLMWorkerImpl::init_model(ModelContext& context) {
   if (FLAGS_enable_eplb) {
     eplb_executor_ = std::make_unique<EplbExecutor>(model_.get(), device_);
   }
+
+  if (FLAGS_enable_beam_search_kernel) {
+    beam_searcher_ = std::make_unique<BeamSearcher>();
+  }
   return true;
 }
 
@@ -157,12 +161,39 @@ std::optional<ForwardOutput> LLMWorkerImpl::step(
     sample_output = sampler_->forward(logits, concated_sampling_params);
     output.logits = logits;
 
+    // beam search kernel
+    BeamSearchOutput beam_search_output;
+    if (concated_sampling_params.use_beam_search &&
+        inputs.acc_logprob.numel() > 0) {
+      beam_search_output = beam_searcher_->forward(inputs.acc_logprob,
+                                                   sample_output.top_tokens,
+                                                   sample_output.top_logprobs);
+    }
+
     // set sample output to output
     output.sample_output = sample_output;
     // carry over the sampling params
     output.do_sample = concated_sampling_params.do_sample;
     output.logprobs = concated_sampling_params.logprobs;
     output.max_top_logprobs = concated_sampling_params.max_top_logprobs;
+    // set beam search output to output
+    output.beam_search_output = beam_search_output;
+  }
+
+  // if running in multi_stream_parallel step, all micro batches
+  // should be in same prefill stage, so, to judge empty_kv_cache,
+  // just use micro batch 0 here
+  if (options_.enable_speculative_decode() && !is_spec_draft_) {
+    if (input_params_micro_batches[0].q_seq_lens_vec[0] > 1) {
+      output.sample_output.embeddings = hidden_states;
+    } else if (concated_sampling_params.sample_idxes.defined()) {
+      // auto sample_idxes =
+      //     concated_sampling_params.selected_token_idxes.index_select(
+      //         /*dim=*/0, concated_sampling_params.sample_idxes);
+      auto embeddings = hidden_states.index_select(
+          /*dim=*/0, concated_sampling_params.sample_idxes);
+      output.sample_output.embeddings = embeddings;
+    }
   }
 
   // if running in multi_stream_parallel step, all micro batches

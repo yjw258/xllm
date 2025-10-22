@@ -76,6 +76,8 @@ struct SamplingParameters {
     params.max_top_logprobs = max_top_logprobs;
     params.is_embeddings = is_embeddings;
 
+    // for beam search
+    params.use_beam_search = use_beam_search;
     return params;
   }
 
@@ -135,6 +137,9 @@ struct SamplingParameters {
   // max number of top logprobs in the batch.
   // only used when logprobs is true.
   int64_t max_top_logprobs = 0;
+
+  // for beam search
+  bool use_beam_search = false;
 };
 
 struct SampleOutput {

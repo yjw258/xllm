@@ -56,6 +56,9 @@ class LLMWorkerImpl : public WorkerImpl {
   void set_word_embedding(std::vector<layer::WordEmbedding>& embedding) {
     model_->set_word_embedding(embedding);
   };
+
+ private:
+  std::unique_ptr<BeamSearcher> beam_searcher_;
 };
 
 }  // namespace xllm

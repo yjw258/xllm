@@ -346,6 +346,20 @@ void WorkerService::ExecuteModel(
           batched_fwd_inputs.micro_inputs[i].sampling_params);
     }
 
+    // concat acc_logprob here for beam search together
+    if (micro_batches_num > 1) {
+      std::vector<torch::Tensor> acc_logprob_vec;
+      acc_logprob_vec.reserve(micro_batches_num);
+      for (auto i = 0; i < micro_batches_num; ++i) {
+        acc_logprob_vec.push_back(
+            batched_fwd_inputs.micro_inputs[i].acc_logprob);
+      }
+      batched_fwd_inputs.acc_logprob = torch::cat(acc_logprob_vec, /*dim=*/-1);
+    } else {
+      batched_fwd_inputs.acc_logprob =
+          batched_fwd_inputs.micro_inputs[0].acc_logprob;
+    }
+
     // model output
     torch::Tensor next_tokens;
     torch::Tensor logprobs;
@@ -354,6 +368,10 @@ void WorkerService::ExecuteModel(
     torch::Tensor embeddings;
     torch::Tensor expert_load_data;
     int32_t prepared_layer_id = -1;
+    // beam search kernel output
+    torch::Tensor src_seq_idxes;
+    torch::Tensor out_tokens;
+    torch::Tensor out_logprobs;
 
     // execute model
     auto future = worker_->step_async(batched_fwd_inputs);
@@ -364,6 +382,8 @@ void WorkerService::ExecuteModel(
       if (forward_outputs) {
         DCHECK(forward_outputs.has_value()) << "Failed to execute model";
         const auto& sample_output = forward_outputs.value().sample_output;
+        const auto& beam_search_output =
+            forward_outputs.value().beam_search_output;
         expert_load_data = safe_to(
             forward_outputs.value().expert_load_data, torch::kCPU, true);
         prepared_layer_id = forward_outputs.value().prepared_layer_id;
@@ -382,11 +402,32 @@ void WorkerService::ExecuteModel(
           if (next_tokens.defined()) {
             // [num_seq]
             logprobs = safe_to(sample_output.logprobs, torch::kCPU, true);
-            // [num_seq, topk]
-            top_tokens = safe_to(sample_output.top_tokens, torch::kCPU, true);
-            // [num_seq, topk]
-            top_logprobs =
-                safe_to(sample_output.top_logprobs, torch::kCPU, true);
+
+            if (!beam_search_output.src_seq_idxes.defined()) {
+              // beam search kernel will provide final tokens/logprobs in beam
+              // search output, so keep top_tokens/top_logprobs undefined to
+              // avoid returning them.
+              // [num_seq, topk]
+              top_tokens = safe_to(sample_output.top_tokens, torch::kCPU, true);
+              // [num_seq, topk]
+              top_logprobs =
+                  safe_to(sample_output.top_logprobs, torch::kCPU, true);
+            }
+          }
+
+          // beam search output
+          // [num_seq]
+          src_seq_idxes =
+              safe_to(beam_search_output.src_seq_idxes, torch::kCPU, true);
+          if (src_seq_idxes.defined()) {
+            // [num_seq]
+            out_tokens =
+                safe_to(beam_search_output.out_tokens, torch::kCPU, true);
+            // [num_seq]
+            out_logprobs =
+                safe_to(beam_search_output.out_logprobs,
+                        torch::dtype(torch::kFloat32).device(torch::kCPU),
+                        true);
           }
           auto ret = stream_->synchronize();
         }
@@ -419,6 +460,9 @@ void WorkerService::ExecuteModel(
                             embeddings,
                             expert_load_data,
                             prepared_layer_id,
+                            src_seq_idxes,
+                            out_tokens,
+                            out_logprobs,
                             pb_forward_output);
     COUNTER_ADD(worker_service_latency_seconds, timer.elapsed_seconds());
   });
@@ -441,6 +485,8 @@ void WorkerService::GetLastStepResult(
           const auto& expert_load_data = safe_to(
               forward_outputs.value().expert_load_data, torch::kCPU, true);
           int32_t prepared_layer_id = forward_outputs.value().prepared_layer_id;
+          const auto& beam_search_output =
+              forward_outputs.value().beam_search_output;
           c10::StreamGuard streamGuard = stream_->set_stream_guard();
           // [num_seq, ..., embed_dim]
           auto embeddings =
@@ -460,6 +506,17 @@ void WorkerService::GetLastStepResult(
             // [num_seq, topk]
             const auto& top_logprobs =
                 safe_to(sample_output.top_logprobs, torch::kCPU, true);
+            // [num_seq]
+            const auto& src_seq_idxes =
+                safe_to(beam_search_output.src_seq_idxes, torch::kCPU, true);
+            // [num_seq]
+            const auto& out_tokens =
+                safe_to(beam_search_output.out_tokens, torch::kCPU, true);
+            // [num_seq]
+            const auto& out_logprobs =
+                safe_to(beam_search_output.out_logprobs,
+                        torch::dtype(torch::kFloat32).device(torch::kCPU),
+                        true);
             auto ret = stream_->synchronize();
 
             forward_output_to_proto(next_tokens,
@@ -469,6 +526,9 @@ void WorkerService::GetLastStepResult(
                                     embeddings,
                                     expert_load_data,
                                     prepared_layer_id,
+                                    src_seq_idxes,
+                                    out_tokens,
+                                    out_logprobs,
                                     pb_forward_output);
           }
         }

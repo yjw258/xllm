@@ -50,6 +50,9 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
   std::vector<int32_t> flatten_positions_vec =
       std::vector<int32_t>(pb_forward_input->flatten_positions_vec().begin(),
                            pb_forward_input->flatten_positions_vec().end());
+  std::vector<float> acc_logprob_vec =
+      std::vector<float>(pb_forward_input->acc_logprob_vec().begin(),
+                         pb_forward_input->acc_logprob_vec().end());
   std::vector<int32_t> new_token_slot_ids =
       std::vector<int32_t>(pb_forward_input->new_token_slot_ids().begin(),
                            pb_forward_input->new_token_slot_ids().end());
@@ -168,6 +171,7 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
     tmp.top_logprobs = sp.top_logprobs();
     tmp.do_sample = sp.do_sample();
     tmp.is_embeddings = sp.is_embeddings();
+    tmp.beam_width = sp.beam_width();
     tmp_sampling_params.emplace_back(tmp);
   }
   for (size_t i = 0; i < tmp_sampling_params.size(); ++i) {
@@ -186,6 +190,9 @@ void proto_to_forward_input(const proto::ForwardInput* pb_forward_input,
   forward_inputs.token_ids = torch::tensor(flatten_tokens_vec, tensor_options);
   forward_inputs.positions =
       torch::tensor(flatten_positions_vec, tensor_options);
+  forward_inputs.acc_logprob = torch::tensor(
+      acc_logprob_vec,
+      torch::dtype(torch::kFloat32).device(torch::kCPU).pinned_memory(true));
   std::pair<int, int> decode_seq_range{0, 0};
 #if defined(USE_NPU)
   if (q_seq_lens.size() >= 1) {
@@ -338,6 +345,8 @@ void forward_input_to_proto(const RawForwardInput& inputs,
                       inputs.flatten_tokens_vec);
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_flatten_positions_vec(),
                       inputs.flatten_positions_vec);
+  ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_acc_logprob_vec(),
+                      inputs.acc_logprob_vec);
   std::vector<proto::RequestSamplingParam> pb_sampling_params;
   for (auto sp : inputs.sampling_params) {
     proto::RequestSamplingParam pb_sp;
@@ -351,6 +360,7 @@ void forward_input_to_proto(const RawForwardInput& inputs,
     pb_sp.set_top_logprobs(sp->top_logprobs);
     pb_sp.set_do_sample(sp->do_sample);
     pb_sp.set_is_embeddings(sp->is_embeddings);
+    pb_sp.set_beam_width(sp->beam_width);
     pb_sampling_params.emplace_back(pb_sp);
   }
   ADD_VECTOR_TO_PROTO(pb_forward_input->mutable_sampling_params(),
@@ -505,6 +515,15 @@ void proto_to_forward_output(const proto::ForwardOutput& pb_output,
   raw_forward_output.expert_load_data.reserve(expert_load_data_size);
   raw_forward_output.expert_load_data.assign(
       pb_output.expert_load_data().begin(), pb_output.expert_load_data().end());
+  raw_forward_output.src_seq_idxes.reserve(pb_output.src_seq_idxes().size());
+  raw_forward_output.src_seq_idxes.assign(pb_output.src_seq_idxes().begin(),
+                                          pb_output.src_seq_idxes().end());
+  raw_forward_output.out_tokens.reserve(pb_output.out_tokens().size());
+  raw_forward_output.out_tokens.assign(pb_output.out_tokens().begin(),
+                                       pb_output.out_tokens().end());
+  raw_forward_output.out_logprobs.reserve(pb_output.out_logprobs().size());
+  raw_forward_output.out_logprobs.assign(pb_output.out_logprobs().begin(),
+                                         pb_output.out_logprobs().end());
   raw_forward_output.prepared_layer_id = pb_output.prepared_layer_id();
   for (size_t i = 0; i < seq_nums; ++i) {
     proto::SquenceOutput pb_seq_out = pb_output.outputs()[i];
@@ -543,6 +562,9 @@ void forward_output_to_proto(const torch::Tensor& next_tokens,
                              const torch::Tensor& embeddings,
                              const torch::Tensor& expert_load_data,
                              int32_t prepared_layer_id,
+                             const torch::Tensor& src_seq_idxes,
+                             const torch::Tensor& out_tokens,
+                             const torch::Tensor& out_logprobs,
                              proto::ForwardOutput* pb_forward_output) {
   Timer timer;
   int32_t num_seqs = next_tokens.size(0);
@@ -672,6 +694,28 @@ void forward_output_to_proto(const torch::Tensor& next_tokens,
                           expert_load_data_flattened_slice);
     }
   }
+
+  if (src_seq_idxes.defined() && src_seq_idxes.numel() > 0) {
+    Slice<int32_t> src_seq_idxes_slice = {
+        src_seq_idxes.data_ptr<int32_t>(),
+        static_cast<size_t>(src_seq_idxes.numel())};
+    ADD_VECTOR_TO_PROTO(pb_forward_output->mutable_src_seq_idxes(),
+                        src_seq_idxes_slice);
+  }
+  if (out_tokens.defined() && out_tokens.numel() > 0) {
+    Slice<int32_t> out_tokens_slice = {out_tokens.data_ptr<int32_t>(),
+                                       static_cast<size_t>(out_tokens.numel())};
+    ADD_VECTOR_TO_PROTO(pb_forward_output->mutable_out_tokens(),
+                        out_tokens_slice);
+  }
+  if (out_logprobs.defined() && out_logprobs.numel() > 0) {
+    Slice<float> out_logprobs_slice = {
+        out_logprobs.data_ptr<float>(),
+        static_cast<size_t>(out_logprobs.numel())};
+    ADD_VECTOR_TO_PROTO(pb_forward_output->mutable_out_logprobs(),
+                        out_logprobs_slice);
+  }
+
   COUNTER_ADD(proto_latency_seconds_o2proto, timer.elapsed_seconds());
   return;
 }

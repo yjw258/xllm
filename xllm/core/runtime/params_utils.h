@@ -41,6 +41,9 @@ void forward_output_to_proto(const torch::Tensor& next_tokens,
                              const torch::Tensor& embeddings,
                              const torch::Tensor& expert_load_data,
                              int32_t prepared_layer_id,
+                             const torch::Tensor& src_seq_idxes,
+                             const torch::Tensor& out_tokens,
+                             const torch::Tensor& out_logprobs,
                              proto::ForwardOutput* pb_forward_output);
 
 Token build_token(int64_t index,

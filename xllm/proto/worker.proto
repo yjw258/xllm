@@ -126,6 +126,7 @@ message RequestSamplingParam {
   int64 top_logprobs = 8;
   bool do_sample = 9;
   bool is_embeddings = 10;
+  int32 beam_width = 11;
 }
 
 message UniqueTokenIds {
@@ -190,6 +191,8 @@ message ForwardInput {
   // for continuous kvcache
   repeated int64 new_cache_slot_offsets = 35;
   repeated int64 kv_cache_start_offsets = 36;
+  // beam search kernel
+  repeated float acc_logprob_vec = 37;
 }
 
  message BatchedForwardInputs {
@@ -219,6 +222,9 @@ message ForwardOutput {
   repeated SquenceOutput outputs = 2;
   repeated int64 expert_load_data = 3;
   int32 prepared_layer_id = 4;
+  repeated int32 src_seq_idxes = 5;
+  repeated int32 out_tokens = 6;
+  repeated float out_logprobs = 7;
 }
 
 // master create Collective service

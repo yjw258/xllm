@@ -454,6 +454,8 @@ void WorkerImpl::prepare_work_before_execute(
   }
   processed_inputs.concated_sampling_params =
       inputs.concated_sampling_params.to(device_, dtype_);
+  processed_inputs.acc_logprob =
+      inputs.acc_logprob.to(torch::kFloat32).to(device_);
   auto ret = prepare_stream_->synchronize();
 }
 

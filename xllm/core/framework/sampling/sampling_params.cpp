@@ -58,6 +58,9 @@ void SamplingParameters::init(
     logprobs = logprobs || p->logprobs;
     is_embeddings = is_embeddings || p->is_embeddings;
     max_top_logprobs = std::max(max_top_logprobs, p->top_logprobs);
+    if (p->beam_width > 0) {
+      use_beam_search = true;
+    }
   }
 
   bool need_token_stats = false;

@@ -378,3 +378,8 @@ DEFINE_int64(cache_size_per_token,
 DEFINE_int64(buffer_size_per_seq,
              0,
              "Buffer size per sequence in bytes, default 0.");
+
+// --- beam search config ---
+DEFINE_bool(enable_beam_search_kernel,
+            false,
+            "Whether to enable beam search kernel.");

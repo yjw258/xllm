@@ -23,6 +23,7 @@ limitations under the License.
 
 #include "common/types.h"
 #include "framework/model/model_input_params.h"
+#include "framework/sampling/beam_searcher.h"
 #include "framework/sampling/sampling_params.h"
 
 namespace xllm {
@@ -95,6 +96,7 @@ struct ForwardInput {
     inputs.sampling_params = sampling_params.to(device, dtype);
     inputs.transfer_kv_infos = transfer_kv_infos;
     inputs.eplb_info = eplb_info;
+    inputs.acc_logprob = safe_to(acc_logprob, device, true);
     return inputs;
   }
   // flatten token ids
@@ -106,6 +108,8 @@ struct ForwardInput {
   // kv info for disaggregated prefill/decode
   std::vector<TransferKVInfo> transfer_kv_infos;
   EplbInfo eplb_info;
+  // beam search kernel input
+  torch::Tensor acc_logprob;
 };
 
 // output after forward execution
@@ -125,6 +129,8 @@ struct ForwardOutput {
   // for eplb, indicates that the specified layer on the worker
   // has completed the asynchronous loading of new weight.
   int32_t prepared_layer_id;
+
+  BeamSearchOutput beam_search_output;
 };
 
 // Model input with raw data, which will be
@@ -172,6 +178,8 @@ struct RawForwardInput {
   // for continuous kvcache
   std::vector<int64_t> new_cache_slot_offsets;  //[n_tokens]
   std::vector<int64_t> kv_cache_start_offsets;  //[n_seq]
+  // beam search kernel input
+  std::vector<float> acc_logprob_vec;
 };
 
 struct RawSampleOutput {
@@ -182,11 +190,17 @@ struct RawForwardOutput {
   std::vector<RawSampleOutput> outputs;  // num seqs
   std::vector<int64_t> expert_load_data;
   int32_t prepared_layer_id;
+  // beam search kernel output
+  std::vector<int32_t> src_seq_idxes;
+  std::vector<int32_t> out_tokens;
+  std::vector<float> out_logprobs;
 };
 
 struct BatchedForwardInputs {
   std::vector<ForwardInput> micro_inputs;
   SamplingParameters concated_sampling_params;
+  // beam search kernel input
+  torch::Tensor acc_logprob;
 };
 
 }  // namespace xllm

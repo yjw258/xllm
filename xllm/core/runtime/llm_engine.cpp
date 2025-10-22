@@ -684,11 +684,17 @@ ForwardOutput LLMEngine::step(std::vector<Batch>& batch) {
       if (result.value().outputs.empty() && layer_forward_interrupted_) {
         throw ForwardInterruptedException();
       }
-      // set second input param enable_schedule_overlap to false,
-      // if it's not enabled, process_sample_output will append the real token,
-      // if it's enabled, this false here will append the fake token in
-      // process_sample_output
-      batch[dp_rank].process_sample_output(result.value(), false);
+      // if src_seq_idxes is not empty, skip sample output processing and
+      // process beam search output instead
+      if (result.value().src_seq_idxes.size() == 0) {
+        // set second input param enable_schedule_overlap to false,
+        // if it's not enabled, process_sample_output will append the real
+        // token, if it's enabled, this false here will append the fake token in
+        // process_sample_output
+        batch[dp_rank].process_sample_output(result.value(), false);
+      } else {
+        batch[dp_rank].process_beam_search_output(result.value(), false);
+      }
     } else {
       LOG(FATAL) << "Failed to execute model, result has no value";
     }

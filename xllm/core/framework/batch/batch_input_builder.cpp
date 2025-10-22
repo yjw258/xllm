@@ -78,6 +78,7 @@ BatchInputBuilder::BatchInputBuilder(
   state_.flatten_positions_vec.reserve(1000);
   state_.mrope_positions_vec.reserve(sequences.size());
   state_.block_tables_vec.reserve(sequences.size());
+  state_.acc_logprob_vec.reserve(sequences.size());
   if (args_ != nullptr) {
     use_mrope_ = (args_->rope_scaling_rope_type() == "mrope");
   }
@@ -179,6 +180,9 @@ void BatchInputBuilder::process_sequences_multithreaded(uint32_t start_idx,
     state_.block_tables_vec.insert(state_.block_tables_vec.end(),
                                    state.block_tables_vec.begin(),
                                    state.block_tables_vec.end());
+    state_.acc_logprob_vec.insert(state_.acc_logprob_vec.end(),
+                                  state.acc_logprob_vec.begin(),
+                                  state.acc_logprob_vec.end());
     // selected_token_idxes and sample_idxes need offset
     int32_t selected_token_idxes_offset =
         static_cast<int32_t>(state_.flatten_tokens_vec.size()) -
@@ -307,6 +311,13 @@ void BatchInputBuilder::process_single_sequence(
   // Track prefill sequences
   if (sequence->is_prefill_stage()) {
     state.prefill_seq_len++;
+  }
+
+  // Input for beam search kernel
+  if (FLAGS_enable_beam_search_kernel && sequence->check_beam_search() &&
+      sequence->num_generated_tokens() > 0) {
+    state.acc_logprob_vec.push_back(sequence->get_average_logprob() *
+                                    sequence->num_generated_tokens());
   }
 }
 
@@ -625,6 +636,10 @@ RawForwardInput BatchInputBuilder::state_to_raw_forward_input() {
 
   raw_forward_input.embedding_ids = std::move(state_.embedding_ids);
   raw_forward_input.extra_token_ids = std::move(state_.extra_token_ids);
+  // beam search kernel input
+  if (state_.acc_logprob_vec.size() > 0) {
+    raw_forward_input.acc_logprob_vec = std::move(state_.acc_logprob_vec);
+  }
 
   if (FLAGS_enable_continuous_kvcache) {
     raw_forward_input.new_cache_slot_offsets =
