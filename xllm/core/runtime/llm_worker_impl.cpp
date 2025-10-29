@@ -164,7 +164,7 @@ std::optional<ForwardOutput> LLMWorkerImpl::step(
     // beam search kernel
     BeamSearchOutput beam_search_output;
     if (concated_sampling_params.use_beam_search &&
-        inputs.acc_logprob.numel() > 0) {
+        inputs.acc_logprob.defined() && inputs.acc_logprob.numel() > 0) {
       beam_search_output = beam_searcher_->forward(inputs.acc_logprob,
                                                    sample_output.top_tokens,
                                                    sample_output.top_logprobs);
