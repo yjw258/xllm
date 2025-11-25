@@ -396,3 +396,6 @@ DEFINE_bool(
     "Whether to enable prefetch weight,only applicable to Qwen3-dense model."
     "The default prefetching ratio for gateup weight is 40%."
     "If adjustments are needed, e.g. export PREFETCH_COEFFOCIENT=0.5");
+
+// --- online learning config ---
+DEFINE_bool(double_weights_buffer, false, "Whether to double weights buffer.");

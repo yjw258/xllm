@@ -394,6 +394,29 @@ if(USE_NPU)
   include_directories(third_party/hccl_transfer/hccl_transfer/include)
 endif()
 
+# memfabric_hybrid
+if(USE_NPU)
+  set(MF_PATH $ENV{MEMFABRIC_HYBRID_HOME_PATH})
+  if("${MF_PATH}" STREQUAL "")
+      message(FATAL_ERROR "memfabric_hybrid path not found!")
+  endif()
+  set(ASCEND_CANN_PACKAGE_PATH $ENV{ASCEND_HOME_PATH})
+  if("${ASCEND_CANN_PACKAGE_PATH}" STREQUAL "")
+      message(FATAL_ERROR "ascend cann path not found!")
+  endif()
+
+  if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
+      set(TARGET_ARCH "x86_64")
+  elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+      set(TARGET_ARCH "aarch64")
+  else()
+      message(FATAL_ERROR "arch is not support!")
+  endif()
+
+  include_directories(${MF_PATH}/${TARGET_ARCH}-linux/include/smem/host)
+  link_directories(${MF_PATH}/${TARGET_ARCH}-linux/lib64)
+endif()
+
 # add subdirectories
 add_subdirectory(xllm)
 add_subdirectory(third_party)

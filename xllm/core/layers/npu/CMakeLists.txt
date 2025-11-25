@@ -61,4 +61,6 @@ cc_library(
     torch
     torch_npu
     xllm_kernels
+    mf_smem
+    mf_hybm_core
 )

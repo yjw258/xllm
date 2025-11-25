@@ -100,6 +100,8 @@ class BaseLayer : public torch::nn::Module {
 
   virtual int64_t init_layer() { return 0; };
 
+  virtual int64_t switch_weights(bool is_buffer) { return 0; };
+
   void set_weight(const StateDict& state_dict,
                   const std::string& tensor_name,
                   int weight_position,
@@ -129,6 +131,7 @@ class BaseLayer : public torch::nn::Module {
 
  protected:
   std::vector<at::Tensor> at_weight_tensors_;
+  std::vector<at::Tensor> at_weight_tensors_buffer_;
   std::vector<at::Tensor> at_host_weight_tensors_;
   at::Device device_;
   std::string name_;

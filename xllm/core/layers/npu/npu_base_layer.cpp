@@ -213,6 +213,17 @@ void NpuBaseLayer::copy_weights_to_device() {
     CHECK_EQ(err, ACL_SUCCESS) << "aclrtMemcpy failed for tensor index " << i;
     at_host_weight_tensors_[i] = at::Tensor();
   }
+
+  if (FLAGS_double_weights_buffer) {
+    create_device_storage_buffer();
+  }
+}
+
+void NpuBaseLayer::create_device_storage_buffer() {
+  auto ret = aclrtMallocAlign32(
+      &device_storage_buffer_, storage_size_, ACL_MEM_MALLOC_HUGE_FIRST);
+  CHECK_EQ(ret, ACL_SUCCESS)
+      << "Failed to allocate contiguous device storage size=" << storage_size_;
 }
 
 torch::Tensor NpuBaseLayer::convert_to_torch_tensor(
@@ -262,6 +273,26 @@ void NpuBaseLayer::init_atb_tensors() {
     atb_weight_tensors_[i] =
         atb_speed::Utils::AtTensor2Tensor(at_weight_tensors_[i]);
   }
+
+  if (FLAGS_double_weights_buffer) {
+    for (size_t i = 0; i < weight_slices_.size(); ++i) {
+      const auto& slice = weight_slices_[i];
+      if (!slice.bytes) {
+        continue;
+      }
+      void* base = static_cast<char*>(device_storage_buffer_) +
+                   static_cast<ptrdiff_t>(slice.offset);
+      at_weight_tensors_buffer_[i] = convert_to_torch_tensor(
+          slice.sizes, slice.dtype, reinterpret_cast<uintptr_t>(base));
+    }
+
+    c10_npu::NPUCachingAllocator::emptyCache();
+
+    for (size_t i = 0; i < weight_slices_.size(); ++i) {
+      atb_weight_tensors_buffer_[i] =
+          atb_speed::Utils::AtTensor2Tensor(at_weight_tensors_buffer_[i]);
+    }
+  }
 }
 
 void NpuBaseLayer::copy_weights_to_device_async() {
@@ -290,6 +321,16 @@ void NpuBaseLayer::release_device_storage() {
     LOG(ERROR) << "Failed to free contiguous layer storage, ret=" << ret;
   }
   device_storage_ = nullptr;
+
+  if (FLAGS_double_weights_buffer) {
+    if (device_storage_buffer_ != nullptr) {
+      auto ret = aclrtFree(device_storage_buffer_);
+      if (ret != ACL_SUCCESS) {
+        LOG(ERROR) << "Failed to free contiguous layer storage, ret=" << ret;
+      }
+      device_storage_buffer_ = nullptr;
+    }
+  }
 }
 
 void NpuBaseLayer::release_host_storage() {

@@ -51,6 +51,9 @@ limitations under the License.
 #include <torch_npu/csrc/framework/utils/OpPreparation.h>
 #endif
 
+#include "smem.h"
+#include "smem_bm.h"
+
 namespace xllm {
 namespace layer {
 
@@ -80,6 +83,8 @@ class NpuBaseLayer : public BaseLayer {
 
   void copy_weights_to_device();
 
+  void create_device_storage_buffer();
+
   void copy_weights_to_device_async();
 
   void init_atb_tensors();
@@ -96,11 +101,13 @@ class NpuBaseLayer : public BaseLayer {
   };
   void* host_pinned_storage_ = nullptr;
   void* device_storage_ = nullptr;
+  void* device_storage_buffer_ = nullptr;
   size_t storage_size_ = 0;
   std::vector<WeightSlice> weight_slices_;
   atb::Context* context_;
   AtbWorkspace work_space_;
   std::vector<atb::Tensor> atb_weight_tensors_;
+  std::vector<atb::Tensor> atb_weight_tensors_buffer_;
   bool graph_captured_{false};
   static constexpr size_t kDeviceAlignment = 64;
   static constexpr size_t kHostAlignment = 64;

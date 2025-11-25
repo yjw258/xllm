@@ -300,6 +300,14 @@ NpuQwen3DecoderLayerImpl::NpuQwen3DecoderLayerImpl(const ModelContext& context)
   slot_tensor_placeholder_ = torch::full({1}, 0).to(torch::kInt32).to(device_);
   block_tables_placeholder_ =
       torch::zeros({1, 1}).to(torch::kInt32).to(device_);
+
+  if (FLAGS_double_weights_buffer) {
+    at_weight_tensors_buffer_.resize(WEIGHT_COUNT_PER_LAYER);
+    atb_weight_tensors_buffer_.resize(WEIGHT_COUNT_PER_LAYER);
+    for (int i = 0; i < WEIGHT_COUNT_PER_LAYER; ++i) {
+      at_weight_tensors_buffer_[i] = torch::zeros({1}).to(options);
+    }
+  }
 }
 
 void NpuQwen3DecoderLayerImpl::verify_loaded_weights() const {
@@ -488,6 +496,12 @@ int64_t NpuQwen3DecoderLayerImpl::init_layer() {
   return atb::NO_ERROR;
 }
 
+int64_t NpuQwen3DecoderLayerImpl::switch_weights(bool is_buffer) {
+  CHECK_OPERATION_STATUS_RETURN(switch_node_weights(prefill_node_, is_buffer));
+  CHECK_OPERATION_STATUS_RETURN(switch_node_weights(decode_node_, is_buffer));
+  return atb::NO_ERROR;
+}
+
 int64_t NpuQwen3DecoderLayerImpl::init_attn_mask() {
   torch::Dtype dtype =
       prefill_param_.isBF16 ? torch::kBFloat16 : torch::kFloat16;
@@ -526,6 +540,26 @@ int64_t NpuQwen3DecoderLayerImpl::init_node(
   node.variantPack.inTensors.resize(node.inTensors.size());
   node.variantPack.outTensors.reserve(multi_stream_parallel_enabled ? 2 : 1);
   node.variantPack.outTensors.resize(multi_stream_parallel_enabled ? 2 : 1);
+
+  return atb::NO_ERROR;
+}
+
+int64_t NpuQwen3DecoderLayerImpl::switch_node_weights(
+    atb_speed::Model::Node& node,
+    bool is_buffer) {
+  CHECK_GE(node.inTensors.size(), WEIGHT_COUNT_PER_LAYER);
+  if (is_buffer) {
+    for (size_t weightTensorId = 0; weightTensorId < WEIGHT_COUNT_PER_LAYER;
+         ++weightTensorId) {
+      node.inTensors.at(weightTensorId) =
+          &atb_weight_tensors_buffer_[weightTensorId];
+    }
+  } else {
+    for (size_t weightTensorId = 0; weightTensorId < WEIGHT_COUNT_PER_LAYER;
+         ++weightTensorId) {
+      node.inTensors.at(weightTensorId) = &atb_weight_tensors_[weightTensorId];
+    }
+  }
 
   return atb::NO_ERROR;
 }
