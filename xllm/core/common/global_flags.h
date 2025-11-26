@@ -206,3 +206,5 @@ DECLARE_bool(enable_shm);
 DECLARE_bool(enable_prefetch_weight);
 
 DECLARE_bool(double_weights_buffer);
+
+DECLARE_bool(train_mode);

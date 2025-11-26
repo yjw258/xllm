@@ -399,3 +399,5 @@ DEFINE_bool(
 
 // --- online learning config ---
 DEFINE_bool(double_weights_buffer, false, "Whether to double weights buffer.");
+
+DEFINE_bool(train_mode, false, "Whether to enable train mode.");

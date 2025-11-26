@@ -89,6 +89,12 @@ class NpuBaseLayer : public BaseLayer {
 
   void init_atb_tensors();
 
+  void* get_device_storage() { return device_storage_; }
+
+  void* get_device_storage_buffer() { return device_storage_buffer_; }
+
+  size_t get_storage_size() { return storage_size_; }
+
  protected:
   atb::Tensor XTensor2Tensor(const std::shared_ptr<xllm::XTensor>& xtensor);
 

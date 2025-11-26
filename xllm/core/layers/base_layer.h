@@ -129,6 +129,12 @@ class BaseLayer : public torch::nn::Module {
   void correct_tensor_dtype(torch::Tensor& tensor,
                             const std::string& tensorName);
 
+  virtual void* get_device_storage() { return nullptr; }
+
+  virtual void* get_device_storage_buffer() { return nullptr; }
+
+  virtual size_t get_storage_size() { return 0; }
+
  protected:
   std::vector<at::Tensor> at_weight_tensors_;
   std::vector<at::Tensor> at_weight_tensors_buffer_;
