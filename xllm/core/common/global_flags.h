@@ -208,3 +208,13 @@ DECLARE_bool(enable_prefetch_weight);
 DECLARE_bool(double_weights_buffer);
 
 DECLARE_bool(train_mode);
+
+DECLARE_int32(device_id);
+
+DECLARE_int32(rank_id);
+
+DECLARE_int32(rank_size);
+
+DECLARE_int32(remote_rank_id);
+
+DECLARE_string(ip_port);

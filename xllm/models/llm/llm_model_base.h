@@ -44,7 +44,8 @@ limitations under the License.
 #else
 #include "core/layers/common/attention.h"
 #endif
-#include "models/barrier_util.h"
+
+#include "models/llm/mf_weight_transfer.h"
 #include "smem.h"
 #include "smem_bm.h"
 
@@ -143,6 +144,10 @@ class LlmDecoderLayerImplBase : public torch::nn::Module {
 
   virtual size_t get_storage_size() {
     return decoder_layer_->get_storage_size();
+  }
+
+  virtual int64_t switch_weights(bool is_buffer) {
+    return decoder_layer_->switch_weights(is_buffer);
   }
 
 #elif defined(USE_MLU)
@@ -388,101 +393,36 @@ class LlmModelImplBase : public torch::nn::Module {
     }
   }
 
-  void create_bms(std::vector<smem_bm_t>& bm_handles) {
-    size_t layer_size = layers_.size();
-    if (FLAGS_double_weights_buffer) {
-      bm_handles.resize(layer_size * 2);
-    } else {
-      bm_handles.resize(layer_size);
+  std::vector<void*> get_weight_addrs() {
+    std::vector<void*> weight_addrs(layers_.size());
+    for (auto i = 0; i < layers_.size(); i++) {
+      weight_addrs[i] = layers_[i]->get_device_storage();
     }
-    for (auto i = 0; i < layer_size; i++) {
-      bm_handles[i] = smem_bm_create(
-          i, 0, SMEMB_DATA_OP_SDMA, 0, layers_[i]->get_storage_size(), 0);
-    }
-    if (FLAGS_double_weights_buffer) {
-      for (auto i = layer_size; i < layer_size * 2; i++) {
-        bm_handles[i] = smem_bm_create(
-            i, 0, SMEMB_DATA_OP_SDMA, 0, layers_[i]->get_storage_size(), 0);
-      }
-    }
+    return weight_addrs;
   }
 
-  void join_bms(const std::vector<smem_bm_t>& bm_handles) {
-    CHECK_GT(bm_handles.size(), 0);
-    int ret = 0;
-    for (auto i = 0; i < bm_handles.size(); i++) {
-      ret = smem_bm_join(bm_handles[i], 0);
-      if (ret != 0) {
-        LOG(ERROR) << "bm join failed.";
-      }
+  std::vector<void*> get_weight_buf_addrs() {
+    std::vector<void*> weight_buf_addrs(layers_.size());
+    for (auto i = 0; i < layers_.size(); i++) {
+      weight_buf_addrs[i] = layers_[i]->get_device_storage_buffer();
     }
+    return weight_buf_addrs;
   }
 
-  void register_bms(const std::vector<smem_bm_t>& bm_handles) {
-    size_t layer_size = layers_.size();
-    int ret = 0;
-    for (auto i = 0; i < layer_size; i++) {
-      ret = smem_bm_register_user_mem(
-          bm_handles[i],
-          (uint64_t)(uintptr_t)layers_[i]->get_device_storage(),
-          layers_[i]->get_storage_size());
-      if (ret != 0) {
-        LOG(ERROR) << "bm register failed.";
-      }
+  std::vector<size_t> get_weight_sizes() {
+    std::vector<size_t> weight_sizes(layers_.size());
+    for (auto i = 0; i < layers_.size(); i++) {
+      weight_sizes[i] = layers_[i]->get_storage_size();
     }
-    if (FLAGS_double_weights_buffer) {
-      for (auto i = 0; i < layer_size; i++) {
-        void* ptr = FLAGS_train_mode ? layers_[i]->get_device_storage()
-                                     : layers_[i]->get_device_storage_buffer();
-        ret = smem_bm_register_user_mem(bm_handles[i + layer_size],
-                                        (uint64_t)(uintptr_t)ptr,
-                                        layers_[i]->get_storage_size());
-        if (ret != 0) {
-          LOG(ERROR) << "bm register failed.";
-        }
-      }
-    }
+    return weight_sizes;
   }
 
-  void set_remote_weight_addrs_(const std::vector<smem_bm_t>& bm_handles,
-                                uint16_t remote_rank_id) {
-    if (remote_weight_addrs_.find(remote_rank_id) ==
-        remote_weight_addrs_.end()) {
-      remote_weight_addrs_[remote_rank_id] =
-          std::vector<uint64_t>(bm_handles.size());
-      for (auto i = 0; i < bm_handles.size(); i++) {
-        remote_weight_addrs_[remote_rank_id][i] =
-            (uint64_t)smem_bm_ptr_by_mem_type(
-                bm_handles[i], SMEM_MEM_TYPE_DEVICE, remote_rank_id);
-      }
+  void switch_weights(bool is_buffer) {
+    CHECK_EQ(FLAGS_double_weights_buffer, true);
+    for (auto i = 0; i < layers_.size(); i++) {
+      layers_[i]->switch_weights(is_buffer);
     }
-  }
-
-  void mf_push_weight(const std::vector<smem_bm_t>& bm_handles,
-                      uint16_t remote_rank_id,
-                      bool is_buffer = false) {
-    size_t layer_size = layers_.size();
-    int ret = 0;
-    if (is_buffer) {
-      assert(FLAGS_double_weights_buffer);
-      for (auto i = 0; i < layer_size; i++) {
-        ret = smem_bm_copy(bm_handles[i + layer_size],
-                           layers_[i]->get_device_storage_buffer(),
-                           remote_weight_addrs_[remote_rank_id][i + layer_size],
-                           layers_[i]->get_storage_size(),
-                           SMEMB_COPY_L2G,
-                           0);
-      }
-    } else {
-      for (auto i = 0; i < layer_size; i++) {
-        ret = smem_bm_copy(bm_handles[i],
-                           layers_[i]->get_device_storage(),
-                           remote_weight_addrs_[remote_rank_id][i],
-                           layers_[i]->get_storage_size(),
-                           SMEMB_COPY_L2G,
-                           0);
-      }
-    }
+    LOG(INFO) << "switch weights to: " << (is_buffer ? "buffer" : "origin");
   }
 
  protected:
@@ -511,7 +451,6 @@ class LlmModelImplBase : public torch::nn::Module {
  private:
   std::string model_type_;
   int32_t device_id_;
-  std::unordered_map<uint16_t, std::vector<uint64_t>> remote_weight_addrs_;
 };
 
 template <typename LlmModelType>
@@ -535,6 +474,10 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
                                       QuantArgs{},
                                       context.get_parallel_args(),
                                       context.get_tensor_options()));
+#endif
+#if defined(USE_NPU)
+    mf_weight_transfer_ = std::make_unique<MfWeightTransfer>(
+        FLAGS_device_id, FLAGS_rank_id, FLAGS_rank_size, FLAGS_ip_port);
 #endif
   }
 
@@ -590,39 +533,26 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
     model_->merge_loaded_weights();
     // test
     lm_head_->merge_loaded_weights();
+
+    // mf d2d test
+    LOG(INFO) << "load model succeed.";
+    std::vector<void*> weight_addrs = model_->get_weight_addrs();
+    std::vector<void*> weight_buf_addrs = model_->get_weight_buf_addrs();
+    std::vector<size_t> weight_sizes = model_->get_weight_sizes();
+    mf_weight_transfer_->init(weight_addrs, weight_buf_addrs, weight_sizes);
+    LOG(INFO) << "mf weight transfer init succeed.";
+    if (FLAGS_train_mode) {
+      mf_weight_transfer_->transfer_weight(
+          FLAGS_remote_rank_id, MF_PUSH_WEIGHT, true, true);
+    }
+    mf_weight_transfer_->barrier();
+    if (!FLAGS_train_mode) {
+      switch_weights(true);
+    }
 #endif
   }
 
-  void pre_init_bm(uint32_t deviceId,
-                   uint32_t rankId,
-                   uint32_t rkSize,
-                   std::string ipPort) {
-    auto ret = aclrtCreateStream(&mf_stream_);
-    ret = smem_init(0);
-    smem_set_log_level(2);
-
-    smem_bm_config_t config;
-    (void)smem_bm_config_init(&config);
-    std::string url = "tcp://0.0.0.0/0:10005";
-    std::copy_n(url.c_str(), url.size(), config.hcomUrl);
-    config.autoRanking = false;
-    config.rankId = rankId;
-
-    config.flags = 2;  // init gvm
-    ret = smem_bm_init(ipPort.c_str(), rkSize, deviceId, &config);
-
-    g_barrier_ = new (std::nothrow) BarrierUtil;
-    ret = g_barrier_->Init(deviceId, rankId, rkSize, ipPort);
-  }
-
-  void fianlize_all() {
-    smem_bm_uninit(0);
-    if (mf_stream_ != nullptr) {
-      aclrtDestroyStream(mf_stream_);
-    }
-  }
-
-  void create_bms() { model_->create_bms(bm_handles_); }
+  void switch_weights(bool is_buffer) { model_->switch_weights(is_buffer); }
 
   virtual void prepare_expert_weight(int32_t layer_id,
                                      const std::vector<int32_t>& expert_ids) {
@@ -651,9 +581,7 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
   // test
   layer::LmHead lm_head_{nullptr};
 
-  aclrtStream mf_stream_;
-  std::vector<smem_bm_t> bm_handles_;
-  BarrierUtil* g_barrier_;
+  std::unique_ptr<MfWeightTransfer> mf_weight_transfer_;
 };
 
 }  // namespace xllm

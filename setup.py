@@ -177,7 +177,7 @@ def set_npu_envs():
     os.environ["PATH"] = PATH
 
     # memfabric_hybrid
-    MEMFABRIC_HYBRID_HOME_PATH = "/usr/local/mxc/memfabric_hybrid/latest"
+    MEMFABRIC_HYBRID_HOME_PATH = "/usr/local/memfabric_hybrid/latest"
     os.environ["MEMFABRIC_HYBRID_HOME_PATH"] = MEMFABRIC_HYBRID_HOME_PATH
     LD_LIBRARY_PATH = os.getenv("LD_LIBRARY_PATH", "")
     LD_LIBRARY_PATH = MEMFABRIC_HYBRID_HOME_PATH + "/aarch64-linux" + "/lib64" + ":" + LD_LIBRARY_PATH

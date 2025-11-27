@@ -401,3 +401,13 @@ DEFINE_bool(
 DEFINE_bool(double_weights_buffer, false, "Whether to double weights buffer.");
 
 DEFINE_bool(train_mode, false, "Whether to enable train mode.");
+
+DEFINE_int32(device_id, 0, "Device id.");
+
+DEFINE_int32(rank_id, 0, "Rank id.");
+
+DEFINE_int32(rank_size, 1, "Rank size.");
+
+DEFINE_int32(remote_rank_id, 0, "Remote rank id.");
+
+DEFINE_string(ip_port, "tcp://127.0.0.1:8570", "Ip port.");

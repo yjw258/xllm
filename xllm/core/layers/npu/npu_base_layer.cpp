@@ -157,6 +157,7 @@ void NpuBaseLayer::init_weight_slices(int weight_count) {
   }
   size_t max_alignment = std::max(kHostAlignment, kDeviceAlignment);
   storage_size_ = AlignUp(offset, max_alignment);
+  storage_size_ = AlignUp(storage_size_, 2 * 1024 * 1024);
 }
 
 void NpuBaseLayer::copy_weights_to_pinned_host() {
