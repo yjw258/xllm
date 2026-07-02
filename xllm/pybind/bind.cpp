@@ -20,12 +20,20 @@ limitations under the License.
 #include <torch/python.h>
 
 #include "api_service/call.h"
+#include "core/common/global_flags.h"
 #include "core/common/options.h"
 #include "core/common/types.h"
 #include "core/distributed_runtime/llm_master.h"
+#include "core/distributed_runtime/rec_master.h"
 #include "core/distributed_runtime/vlm_master.h"
+#include "core/framework/config/beam_search_config.h"
+#include "core/framework/config/execution_config.h"
+#include "core/framework/config/kv_cache_config.h"
 #include "core/framework/config/model_config.h"
+#include "core/framework/config/rec_config.h"
+#include "core/framework/config/scheduler_config.h"
 #include "core/framework/multimodal/mm_data.h"
+#include "core/framework/request/rec_type.h"
 #include "core/framework/request/request_output.h"
 #include "core/framework/request/request_params.h"
 #include "core/framework/request/sample_slot.h"
@@ -34,6 +42,84 @@ limitations under the License.
 namespace xllm {
 namespace py = pybind11;
 using namespace pybind11::literals;
+
+namespace {
+
+// Configure the process-wide rec runtime Config singletons. Rec code reads
+// some of these via FLAGS_ and some via *Config::get_instance(); both sources
+// are set here and kept aligned (mirrors the c_api rec init path in
+// c_api/internal/rec.cpp).
+void configure_rec_runtime(int32_t beam_width,
+                           int32_t max_decode_rounds,
+                           int32_t max_seqs_per_batch,
+                           int32_t max_tokens_per_batch,
+                           int32_t max_tokens_per_chunk_for_prefill,
+                           int32_t block_size,
+                           bool enable_prefix_cache,
+                           bool enable_schedule_overlap,
+                           bool enable_chunked_prefill,
+                           bool enable_graph,
+                           bool enable_prefill_piecewise_graph,
+                           bool enable_graph_mode_decode_no_padding,
+                           bool enable_rec_fast_sampler,
+                           bool enable_rec_prefill_only,
+                           bool enable_xattention_one_stage,
+                           bool enable_block_copy_kernel,
+                           bool enable_topk_sorted,
+                           int32_t rec_worker_max_concurrency,
+                           int32_t request_queue_size,
+                           int32_t flashinfer_workspace_buffer_size) {
+  if (rec_worker_max_concurrency < 0) {
+    throw py::value_error("rec_worker_max_concurrency must be non-negative");
+  }
+  if (flashinfer_workspace_buffer_size < 0) {
+    throw py::value_error(
+        "flashinfer_workspace_buffer_size must be non-negative");
+  }
+
+  FLAGS_beam_width = beam_width;
+  FLAGS_max_decode_rounds = max_decode_rounds;
+  FLAGS_max_seqs_per_batch = max_seqs_per_batch;
+  FLAGS_max_tokens_per_batch = max_tokens_per_batch;
+  FLAGS_block_size = block_size;
+  FLAGS_flashinfer_workspace_buffer_size = flashinfer_workspace_buffer_size;
+
+  BeamSearchConfig::get_instance()
+      .beam_width(beam_width)
+      .enable_block_copy_kernel(enable_block_copy_kernel)
+      .enable_topk_sorted(enable_topk_sorted);
+  RecConfig::get_instance()
+      .max_decode_rounds(max_decode_rounds)
+      .enable_rec_prefill_only(enable_rec_prefill_only)
+      .enable_rec_fast_sampler(enable_rec_fast_sampler)
+      .enable_xattention_one_stage(enable_xattention_one_stage)
+      .rec_worker_max_concurrency(
+          static_cast<uint32_t>(rec_worker_max_concurrency));
+  if (request_queue_size > 0) {
+    RecConfig::get_instance().request_queue_size(request_queue_size);
+  }
+  SchedulerConfig::get_instance()
+      .max_seqs_per_batch(max_seqs_per_batch)
+      .max_tokens_per_batch(max_tokens_per_batch)
+      .max_tokens_per_chunk_for_prefill(max_tokens_per_chunk_for_prefill)
+      .enable_schedule_overlap(enable_schedule_overlap)
+      .enable_chunked_prefill(enable_chunked_prefill);
+  KVCacheConfig::get_instance()
+      .block_size(block_size)
+      .enable_prefix_cache(enable_prefix_cache);
+  ModelConfig::get_instance().flashinfer_workspace_buffer_size(
+      flashinfer_workspace_buffer_size);
+  ExecutionConfig::get_instance()
+      .enable_graph(enable_graph)
+      .enable_prefill_piecewise_graph(enable_prefill_piecewise_graph)
+      .enable_graph_mode_decode_no_padding(enable_graph_mode_decode_no_padding);
+
+#if !defined(USE_NPU) && !defined(USE_CUDA)
+  BeamSearchConfig::get_instance().enable_block_copy_kernel(false);
+#endif
+}
+
+}  // namespace
 
 PYBIND11_MODULE(xllm_export, m) {
   // 1. export Options
@@ -104,7 +190,11 @@ PYBIND11_MODULE(xllm_export, m) {
       .def_readwrite("output_shm_size", &Options::output_shm_size_)
       .def_readwrite("is_local", &Options::is_local_)
       .def_readwrite("enable_sleep_mode", &Options::enable_sleep_mode_)
-      .def_readwrite("kv_cache_dtype", &Options::kv_cache_dtype_);
+      .def_readwrite("kv_cache_dtype", &Options::kv_cache_dtype_)
+      .def_readwrite("server_idx", &Options::server_idx_)
+      .def_readwrite("beam_width", &Options::beam_width_)
+      .def_readwrite("rec_worker_max_concurrency",
+                     &Options::rec_worker_max_concurrency_);
 
   // 2. export LLMMaster
   py::class_<LLMMaster>(m, "LLMMaster")
@@ -193,6 +283,59 @@ PYBIND11_MODULE(xllm_export, m) {
           py::call_guard<py::gil_scoped_release>())
       .def("__repr__", [](const LLMMaster& self) {
         return "LLMMaster({})"_s.format(self.options());
+      });
+
+  // RecType: distinguishes OneRec vs LlmRec (generative recommendation).
+  py::enum_<RecType>(m, "RecType")
+      .value("NONE", RecType::kNone)
+      .value("ONEREC", RecType::kOneRec)
+      .value("LLMREC", RecType::kLlmRec);
+
+  // RecMaster: drives generative recommendation (backend == "rec"). Aligned
+  // with LLM's text/token prompt path; batch generate is done by the Python
+  // layer looping over single handle_text_request calls.
+  py::class_<RecMaster>(m, "RecMaster")
+      .def(py::init<const Options&>(),
+           py::arg("options"),
+           py::call_guard<py::gil_scoped_release>())
+      .def("run", &RecMaster::run, py::call_guard<py::gil_scoped_release>())
+      .def("rec_type", &RecMaster::rec_type)
+      .def(
+          "handle_text_request",
+          [](RecMaster& self,
+             std::string prompt,
+             RequestParams request_params,
+             OutputCallback callback,
+             std::optional<std::vector<int>> prompt_tokens) {
+            self.handle_request(std::move(prompt),
+                                std::move(prompt_tokens),
+                                std::nullopt,
+                                std::move(request_params),
+                                std::move(callback));
+          },
+          py::arg("prompt"),
+          py::arg("request_params"),
+          py::arg("callback"),
+          py::arg("prompt_tokens") = std::nullopt,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "handle_token_request",
+          [](RecMaster& self,
+             std::vector<int> prompt_tokens,
+             RequestParams request_params,
+             OutputCallback callback) {
+            self.handle_request(std::string(),
+                                std::move(prompt_tokens),
+                                std::nullopt,
+                                std::move(request_params),
+                                std::move(callback));
+          },
+          py::arg("prompt_tokens"),
+          py::arg("request_params"),
+          py::arg("callback"),
+          py::call_guard<py::gil_scoped_release>())
+      .def("__repr__", [](const RecMaster& self) {
+        return "RecMaster({})"_s.format(self.options());
       });
 
   // 3. export SampleSlot
@@ -322,6 +465,17 @@ PYBIND11_MODULE(xllm_export, m) {
             self.token, self.token_id, self.logprob);
       });
 
+  // export RecItemInfo (rec recommendation item metadata)
+  py::class_<RecItemInfo>(m, "RecItemInfo")
+      .def(py::init())
+      .def_readwrite("item_id", &RecItemInfo::item_id)
+      .def_readwrite("did", &RecItemInfo::did)
+      .def_readwrite("type", &RecItemInfo::type)
+      .def("__repr__", [](const RecItemInfo& self) {
+        return "RecItemInfo(item_id={}, did={!r}, type={!r})"_s.format(
+            self.item_id, self.did, self.type);
+      });
+
   // 10. export SequenceOutput
   py::class_<SequenceOutput>(m, "SequenceOutput")
       .def(py::init())
@@ -329,8 +483,13 @@ PYBIND11_MODULE(xllm_export, m) {
       .def_readwrite("text", &SequenceOutput::text)
       .def_readwrite("embedding", &SequenceOutput::embedding)
       .def_readwrite("token_ids", &SequenceOutput::token_ids)
+      .def_readwrite("item_ids", &SequenceOutput::item_ids)
+      .def_readwrite("item_ids_list", &SequenceOutput::item_ids_list)
+      .def_readwrite("item_info", &SequenceOutput::item_info)
+      .def_readwrite("item_infos_list", &SequenceOutput::item_infos_list)
       .def_readwrite("finish_reason", &SequenceOutput::finish_reason)
       .def_readwrite("logprobs", &SequenceOutput::logprobs)
+      .def_readwrite("token_ids_logprobs", &SequenceOutput::token_ids_logprobs)
       .def_readwrite("embeddings", &SequenceOutput::embeddings)
       .def("__repr__", [](const SequenceOutput& self) {
         return "SequenceOutput({}: {!r})"_s.format(self.index, self.text);
@@ -399,6 +558,28 @@ PYBIND11_MODULE(xllm_export, m) {
   m.def("get_model_backend",
         &ModelRegistry::get_model_backend,
         py::arg("model_type"));
+  m.def("configure_rec_runtime",
+        &configure_rec_runtime,
+        py::arg("beam_width"),
+        py::arg("max_decode_rounds"),
+        py::arg("max_seqs_per_batch"),
+        py::arg("max_tokens_per_batch"),
+        py::arg("max_tokens_per_chunk_for_prefill"),
+        py::arg("block_size"),
+        py::arg("enable_prefix_cache"),
+        py::arg("enable_schedule_overlap"),
+        py::arg("enable_chunked_prefill"),
+        py::arg("enable_graph"),
+        py::arg("enable_prefill_piecewise_graph"),
+        py::arg("enable_graph_mode_decode_no_padding"),
+        py::arg("enable_rec_fast_sampler"),
+        py::arg("enable_rec_prefill_only"),
+        py::arg("enable_xattention_one_stage"),
+        py::arg("enable_block_copy_kernel"),
+        py::arg("enable_topk_sorted"),
+        py::arg("rec_worker_max_concurrency"),
+        py::arg("request_queue_size"),
+        py::arg("flashinfer_workspace_buffer_size"));
   m.def(
       "configure_cpp_chat_template",
       [](bool use_cpp_chat_template, const std::string& model_type) {

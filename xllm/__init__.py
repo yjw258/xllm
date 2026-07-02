@@ -62,6 +62,8 @@ _PUBLIC_NAMES = {
     "Embedding",
     "LLM",
     "LLMMaster",
+    "REC",
+    "RecMaster",
     "VLM",
     "VLMMaster",
     "Options",
@@ -72,6 +74,8 @@ _PUBLIC_NAMES = {
     "RequestOutput",
     "Usage",
     "SequenceOutput",
+    "RecType",
+    "RecItemInfo",
     "Status",
     "StatusCode",
     "MMType",
@@ -93,6 +97,7 @@ def _load_public_api() -> None:
     from xllm.pybind.embedding import Embedding
     from xllm.pybind.llm import LLM
     from xllm.pybind.params import BeamSearchParams, PoolingParams, SamplingParams
+    from xllm.pybind.rec import REC
 
     try:
         from xllm.pybind.vlm import VLM
@@ -105,6 +110,8 @@ def _load_public_api() -> None:
             "Embedding": Embedding,
             "LLM": LLM,
             "LLMMaster": xllm_export.LLMMaster,
+            "REC": REC,
+            "RecMaster": xllm_export.RecMaster,
             "VLM": VLM,
             "VLMMaster": xllm_export.VLMMaster,
             "Options": xllm_export.Options,
@@ -115,6 +122,8 @@ def _load_public_api() -> None:
             "RequestOutput": xllm_export.RequestOutput,
             "Usage": xllm_export.Usage,
             "SequenceOutput": xllm_export.SequenceOutput,
+            "RecType": xllm_export.RecType,
+            "RecItemInfo": xllm_export.RecItemInfo,
             "Status": xllm_export.Status,
             "StatusCode": xllm_export.StatusCode,
             "MMType": xllm_export.MMType,
@@ -140,6 +149,8 @@ __all__ = [
     "Embedding",
     "LLM",
     "LLMMaster",
+    "REC",
+    "RecMaster",
     "VLM",
     "VLMMaster",
     "Options",
@@ -150,6 +161,8 @@ __all__ = [
     "RequestOutput",
     "Usage",
     "SequenceOutput",
+    "RecType",
+    "RecItemInfo",
     "Status",
     "StatusCode",
 ]
