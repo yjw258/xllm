@@ -173,6 +173,7 @@ class REC:
         input_shm_size: int = 1024,
         output_shm_size: int = 128,
         disable_log_stats: bool = True,
+        enable_sleep_mode: bool = False,
         # Rec-specific knobs (no LLM equivalent). Defaults mirror the c_api rec
         # preset XLLM_INIT_REC_OPTIONS_DEFAULT (xllm/c_api/default.h).
         beam_width: int = 128,
@@ -260,6 +261,7 @@ class REC:
         options.input_shm_size = input_shm_size
         options.output_shm_size = output_shm_size
         options.disable_log_stats = disable_log_stats
+        options.enable_sleep_mode = enable_sleep_mode
         options.beam_width = beam_width
         options.rec_worker_max_concurrency = rec_worker_max_concurrency
         options.server_idx = server_idx
@@ -301,10 +303,24 @@ class REC:
         self._max_decode_rounds = max_decode_rounds
 
     def finish(self) -> None:
-        try:
-            utils.terminate_process(os.getpid())
-        except Exception:
-            pass
+        # Explicitly destroy the RecMaster so its C++ destructor runs (frees NPU
+        # memory, joins worker threads). This is now safe: the MPMCThreadPool
+        # shutdown deadlock was fixed, so the destructor no longer hangs.
+        os.exit(0)  # exit() is safer than RecMaster.finish() because it kills all threads
+
+    def sleep(self) -> None:
+        """Release device HBM in place (SleepableAllocator) without destroying
+        the engine. Requires the engine to be created with
+        ``enable_sleep_mode=True``. Call ``wake_up`` to re-acquire the memory.
+        """
+        self.master.sleep()
+
+    def wake_up(self) -> None:
+        """Re-acquire device HBM previously released by ``sleep``."""
+        self.master.wake_up()
+
+    def is_sleeping(self) -> bool:
+        return self.master.is_sleeping()
 
     def generate(
         self,

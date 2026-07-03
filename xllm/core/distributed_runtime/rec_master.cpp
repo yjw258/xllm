@@ -611,6 +611,22 @@ RecMaster::~RecMaster() {
   }
 }
 
+bool RecMaster::sleep() {
+  const bool ok = engine_->sleep(MasterStatus::DEEP_SLEEP);
+  if (ok) {
+    set_master_status(MasterStatus::DEEP_SLEEP);
+  }
+  return ok;
+}
+
+bool RecMaster::wakeup() {
+  const bool ok = engine_->wakeup(WakeupOptions{});
+  if (ok) {
+    set_master_status(MasterStatus::WAKEUP);
+  }
+  return ok;
+}
+
 void RecMaster::handle_request(
     std::string prompt,
     std::optional<std::vector<int>> prompt_tokens,

@@ -63,6 +63,12 @@ class RecMaster : public Master {
   // start the handling loop
   void run() override;
 
+  // RL sleep/wakeup: release / re-acquire device HBM in place via the engine's
+  // SleepableAllocator path. is_sleeping() is provided by the Master base.
+  bool sleep() override;
+
+  bool wakeup() override;
+
   RecType rec_type() const { return rec_type_; }
 
  private:

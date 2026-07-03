@@ -237,6 +237,60 @@ void RecEngine::update_last_step_result(std::vector<Batch>& batch) {
   UNUSED_PARAMETER(batch);
 }
 
+bool RecEngine::sleep(MasterStatus master_status) {
+  LOG(INFO) << "[DIAG] RecEngine::sleep: workers_=" << workers_.size()
+            << ", worker_clients_=" << worker_clients_.size();
+  // Release device HBM in place via the SleepableAllocator path in each
+  // WorkerImpl::rl_sleep(). RecMultiRound uses local workers_ (in-process);
+  // the remote LlmRec pipeline uses worker_clients_. Fan out to whichever is
+  // populated. No object is destroyed, so no destructor can hang.
+  if (!workers_.empty()) {
+    bool ok = true;
+    for (auto& worker : workers_) {
+      ok = worker->sleep(master_status) && ok;
+    }
+    return ok;
+  }
+  if (!worker_clients_.empty()) {
+    std::vector<folly::SemiFuture<bool>> futures;
+    futures.reserve(worker_clients_.size());
+    for (auto& worker : worker_clients_) {
+      futures.push_back(worker->sleep_async(master_status));
+    }
+    bool ok = true;
+    for (auto& r : folly::collectAll(futures).get()) {
+      ok = r.hasValue() && r.value() && ok;
+    }
+    return ok;
+  }
+  LOG(ERROR) << "RecEngine::sleep: no workers available";
+  return false;
+}
+
+bool RecEngine::wakeup(const WakeupOptions& options) {
+  if (!workers_.empty()) {
+    bool ok = true;
+    for (auto& worker : workers_) {
+      ok = worker->wakeup(options) && ok;
+    }
+    return ok;
+  }
+  if (!worker_clients_.empty()) {
+    std::vector<folly::SemiFuture<bool>> futures;
+    futures.reserve(worker_clients_.size());
+    for (auto& worker : worker_clients_) {
+      futures.push_back(worker->wakeup_async(options));
+    }
+    bool ok = true;
+    for (auto& r : folly::collectAll(futures).get()) {
+      ok = r.hasValue() && r.value() && ok;
+    }
+    return ok;
+  }
+  LOG(ERROR) << "RecEngine::wakeup: no workers available";
+  return false;
+}
+
 std::vector<int64_t> RecEngine::get_active_activation_memory() const {
   return pipeline_->get_active_activation_memory();
 }

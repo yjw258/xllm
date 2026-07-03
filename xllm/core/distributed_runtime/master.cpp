@@ -446,6 +446,7 @@ Master::Master(const Options& options, EngineType type)
         .max_tokens_for_graph_mode(options_.max_tokens_for_graph_mode())
         .max_tokens_per_chunk_for_prefill(
             options_.max_tokens_per_chunk_for_prefill())
+        .enable_sleep_mode(options_.enable_sleep_mode())
         .rec_worker_max_concurrency(options_.rec_worker_max_concurrency());
 
     engine_ = std::make_unique<RecEngine>(eng_options);

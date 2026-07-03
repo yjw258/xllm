@@ -49,6 +49,10 @@ class RecEngine : public Engine {
 
   bool init() override;
 
+  bool sleep(MasterStatus master_status) override;
+
+  bool wakeup(const WakeupOptions& options) override;
+
   void update_last_step_result(std::vector<Batch>& batch) override;
 
   std::vector<int64_t> get_active_activation_memory() const override;

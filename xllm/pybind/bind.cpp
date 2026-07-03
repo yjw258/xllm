@@ -299,6 +299,17 @@ PYBIND11_MODULE(xllm_export, m) {
            py::arg("options"),
            py::call_guard<py::gil_scoped_release>())
       .def("run", &RecMaster::run, py::call_guard<py::gil_scoped_release>())
+      .def(
+          "sleep",
+          [](RecMaster& self) { return self.sleep(); },
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "wake_up",
+          [](RecMaster& self) { return self.wakeup(); },
+          py::call_guard<py::gil_scoped_release>())
+      .def("is_sleeping",
+           &RecMaster::is_sleeping,
+           py::call_guard<py::gil_scoped_release>())
       .def("rec_type", &RecMaster::rec_type)
       .def(
           "handle_text_request",

@@ -2069,6 +2069,19 @@ void RecWorkerImpl::LlmRecMultiRoundPipeline::allocate_kv_caches_related() {
       torch::zeros({max_total_beam}, int_options);
 }
 
+void RecWorkerImpl::LlmRecMultiRoundPipeline::free_sleep_caches() {
+  // Release the large per-layer full KV buffers (plain torch::zeros, not
+  // managed by the SleepableAllocator). Rebuilt by realloc_sleep_caches().
+  cached_full_k_caches_.clear();
+  cached_full_v_caches_.clear();
+}
+
+void RecWorkerImpl::LlmRecMultiRoundPipeline::realloc_sleep_caches() {
+  // Rebuild all pipeline-local caches (idempotent; overwrites via resize +
+  // torch::zeros). Cheap tensors are re-created too, which is harmless.
+  allocate_kv_caches_related();
+}
+
 void RecWorkerImpl::LlmRecMultiRoundPipeline::
     prepare_kv_caches_related_for_input(const ForwardInput& inputs,
                                         ForwardInput& processed_inputs) {
@@ -2966,6 +2979,31 @@ RecWorkerImpl::~RecWorkerImpl() {
   if (::xllm::EPLBConfig::get_instance().enable_eplb()) {
     eplb_executor_.release();
   }
+}
+
+bool RecWorkerImpl::sleep(MasterStatus master_status) {
+  // Free pipeline-local device caches (cached_full_k/v_caches_ etc.) that are
+  // NOT tracked by the SleepableAllocator, then delegate to the base for the
+  // VMM-backed weights + main KV cache.
+  device_.set_device();
+  for (auto& pipeline : work_pipelines_) {
+    if (pipeline) {
+      pipeline->free_sleep_caches();
+    }
+  }
+  return WorkerImpl::sleep(master_status);
+}
+
+bool RecWorkerImpl::wakeup(const WakeupOptions& options) {
+  // Re-acquire VMM-backed memory first, then rebuild the pipeline-local caches.
+  const bool ok = WorkerImpl::wakeup(options);
+  device_.set_device();
+  for (auto& pipeline : work_pipelines_) {
+    if (pipeline) {
+      pipeline->realloc_sleep_caches();
+    }
+  }
+  return ok;
 }
 
 bool RecWorkerImpl::init_model(const std::string& model_weights_path,

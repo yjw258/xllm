@@ -52,6 +52,13 @@ class RecWorkerImpl : public LLMWorkerImpl {
 
   void load_model(std::unique_ptr<ModelLoader> loader) override;
 
+  // RL sleep/wakeup: additionally free / rebuild pipeline-local device caches
+  // (cached_full_k/v_caches_ etc.) that bypass the SleepableAllocator, then
+  // delegate to WorkerImpl for the VMM-backed weights + KV.
+  bool sleep(MasterStatus master_status) override;
+
+  bool wakeup(const WakeupOptions& options) override;
+
   bool init_onerec_model(ModelContext& context);
 
   ForwardInput prepare_inputs(Batch& batch) override;
@@ -100,6 +107,13 @@ class RecWorkerImpl : public LLMWorkerImpl {
                                              ForwardInput& processed_inputs);
 
     virtual std::optional<ForwardOutput> step(const ForwardInput& input);
+
+    // RL sleep hooks: release / re-allocate pipeline-local device caches that
+    // are NOT managed by the SleepableAllocator (plain torch::zeros buffers).
+    // Default no-op; LlmRecMultiRoundPipeline overrides to free/rebuild its
+    // cached_full_k/v_caches_. Called around WorkerImpl::rl_sleep/rl_wakeup.
+    virtual void free_sleep_caches() {}
+    virtual void realloc_sleep_caches() {}
 
     RecPipelineRuntime& runtime() { return runtime_; }
 
@@ -222,6 +236,9 @@ class RecWorkerImpl : public LLMWorkerImpl {
                                      ForwardInput& processed_inputs) override;
 
     std::optional<ForwardOutput> step(const ForwardInput& input) override;
+
+    void free_sleep_caches() override;
+    void realloc_sleep_caches() override;
 
    private:
     // Beam search related tensors
