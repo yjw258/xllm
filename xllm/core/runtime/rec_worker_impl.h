@@ -59,6 +59,13 @@ class RecWorkerImpl : public LLMWorkerImpl {
 
   bool wakeup(const WakeupOptions& options) override;
 
+  // RL weight hot-update: stage each batch of (HF-name, device tensor) into all
+  // pipeline models' host buffers; on is_last, merge in place into the weight
+  // buffers of every work_pipelines_[i] model.
+  bool update_weights_from_tensor(
+      const std::vector<std::pair<std::string, torch::Tensor>>& weights,
+      bool is_last) override;
+
   bool init_onerec_model(ModelContext& context);
 
   ForwardInput prepare_inputs(Batch& batch) override;

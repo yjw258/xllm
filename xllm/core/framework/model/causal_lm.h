@@ -108,6 +108,13 @@ class CausalLM : public torch::nn::Module {
 
   virtual void load_model(std::unique_ptr<ModelLoader> loader) = 0;
 
+  // Incremental weight update (RL update_weights). Default: not supported.
+  // Overridden by CausalLMImpl to forward to the model's staging/merge path.
+  virtual void load_state_dict_partial(const StateDict& state_dict) {
+    NOT_IMPLEMENTED();
+  }
+  virtual void merge_staged_weights() { NOT_IMPLEMENTED(); }
+
   virtual torch::Device device() const = 0;
 
   virtual void prepare_expert_weight(
@@ -236,6 +243,22 @@ class CausalLMImpl : public CausalLM {
 
   void load_model(std::unique_ptr<ModelLoader> loader) override {
     model_->load_model(std::move(loader));
+  }
+
+  void load_state_dict_partial(const StateDict& state_dict) override {
+    if constexpr (detail::has_load_state_dict_partial<Model>::value) {
+      model_->load_state_dict_partial(state_dict);
+    } else {
+      CausalLM::load_state_dict_partial(state_dict);
+    }
+  }
+
+  void merge_staged_weights() override {
+    if constexpr (detail::has_merge_staged_weights<Model>::value) {
+      model_->merge_staged_weights();
+    } else {
+      CausalLM::merge_staged_weights();
+    }
   }
 
   void lazy_load_model(std::unique_ptr<ModelLoader> loader) override {

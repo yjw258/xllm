@@ -149,6 +149,16 @@ class WorkerImpl {
   // `reload_weights`). `weights_path` empty = reuse the original model path.
   virtual bool update_weights(const std::string& weights_path);
 
+  // RL weight hot-update from in-memory tensors (streamed, in-process). Each
+  // batch is a list of (HF-name, device tensor); tensors are staged to host
+  // (kManual). is_last triggers the in-place merge into the wake_up'd weight
+  // buffers. Default no-op; RecWorkerImpl overrides.
+  virtual bool update_weights_from_tensor(
+      const std::vector<std::pair<std::string, torch::Tensor>>& weights,
+      bool is_last) {
+    return false;
+  }
+
   // Start/stop online timeline profiling on this worker's device. CUDA only
   // for now; on other backends these are no-ops returning false.
   virtual bool start_profile();

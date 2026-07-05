@@ -507,6 +507,40 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
     }
   }
 
+  // Incremental weight update (RL update_weights, kManual mode): stage one
+  // batch of HF-named tensors into the host staging buffers WITHOUT merging or
+  // verifying. Multiple calls accumulate; call merge_staged_weights() once all
+  // batches are staged. Mirrors load_model's dispatch (minus verify/merge).
+  virtual void load_state_dict_partial(
+      const StateDict& state_dict,
+      std::string prefix = "model." /*llm model weight prefix*/) {
+    model_->load_state_dict(state_dict.get_dict_with_prefix(
+        std::vector<std::string>{"model.language_model.",
+                                 "language_model.model.",
+                                 prefix,
+                                 "model.",
+                                 ""}));
+    if (!embedding_mode_) {
+      if (tie_word_embeddings) {
+        npu_lm_head_->load_state_dict(
+            state_dict.get_dict_with_prefix(std::vector<std::string>{
+                prefix + "embed_tokens.", "embed_tokens."}));
+      } else {
+        npu_lm_head_->load_state_dict(
+            state_dict.get_dict_with_prefix("lm_head."));
+      }
+    }
+  }
+
+  // Merge all staged weights into the device buffers in place (reuses the
+  // SleepableAllocator VMM region under kManual), then release host staging.
+  virtual void merge_staged_weights() {
+    model_->merge_loaded_weights();
+    if (!embedding_mode_) {
+      npu_lm_head_->merge_loaded_weights();
+    }
+  }
+
   virtual void lazy_load_model(
       std::unique_ptr<ModelLoader> loader,
       std::string prefix = "model." /*llm model weight prefix*/) {

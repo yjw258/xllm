@@ -257,6 +257,38 @@ class LlmForCausalLMImplBase : public torch::nn::Module {
     }
   }
 
+  // Incremental weight update (RL update_weights). Generic (non-NPU) models
+  // load weights straight into place, so load_state_dict_partial just
+  // dispatches one batch and merge_staged_weights is a no-op.
+  virtual void load_state_dict_partial(
+      const StateDict& state_dict,
+      std::string prefix = "model." /*llm model weight prefix*/) {
+    model_->load_state_dict(state_dict.get_dict_with_prefix(
+        std::vector<std::string>{"model.language_model.",
+                                 "language_model.model.",
+                                 prefix,
+                                 "model.",
+                                 ""}));
+    if (!embedding_mode_) {
+      if (tie_word_embeddings) {
+        lm_head_->load_state_dict(
+            state_dict.get_dict_with_prefix(std::vector<std::string>{
+                prefix + "embed_tokens.", "embed_tokens.", "embed."}));
+      } else {
+        lm_head_->load_state_dict(state_dict.get_dict_with_prefix(
+            std::vector<std::string>{"lm_head.",
+                                     "model.lm_head.",
+                                     "model.head.",
+                                     "head.",
+                                     prefix,
+                                     prefix + "lm_head.",
+                                     prefix + "head."}));
+      }
+    }
+  }
+
+  virtual void merge_staged_weights() {}
+
   virtual void prepare_expert_weight(int32_t layer_id,
                                      const std::vector<int32_t>& expert_ids) {
     return;

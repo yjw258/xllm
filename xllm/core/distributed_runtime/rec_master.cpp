@@ -627,6 +627,12 @@ bool RecMaster::wakeup() {
   return ok;
 }
 
+bool RecMaster::update_weights_from_tensor(
+    const std::vector<std::pair<std::string, torch::Tensor>>& weights,
+    bool is_last) {
+  return engine_->update_weights_from_tensor(weights, is_last);
+}
+
 void RecMaster::handle_request(
     std::string prompt,
     std::optional<std::vector<int>> prompt_tokens,

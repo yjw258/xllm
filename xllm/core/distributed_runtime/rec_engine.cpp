@@ -291,6 +291,23 @@ bool RecEngine::wakeup(const WakeupOptions& options) {
   return false;
 }
 
+bool RecEngine::update_weights_from_tensor(
+    const std::vector<std::pair<std::string, torch::Tensor>>& weights,
+    bool is_last) {
+  // TP=1 rec uses local in-process workers; stream weights to each
+  // synchronously (same pattern as sleep/wakeup). Remote path unsupported.
+  if (workers_.empty()) {
+    LOG(ERROR) << "RecEngine::update_weights_from_tensor: no local workers "
+                  "(remote worker_clients_ path unsupported)";
+    return false;
+  }
+  bool ok = true;
+  for (auto& worker : workers_) {
+    ok = worker->update_weights_from_tensor(weights, is_last) && ok;
+  }
+  return ok;
+}
+
 std::vector<int64_t> RecEngine::get_active_activation_memory() const {
   return pipeline_->get_active_activation_memory();
 }

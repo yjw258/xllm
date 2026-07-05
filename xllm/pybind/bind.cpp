@@ -310,6 +310,16 @@ PYBIND11_MODULE(xllm_export, m) {
       .def("is_sleeping",
            &RecMaster::is_sleeping,
            py::call_guard<py::gil_scoped_release>())
+      .def(
+          "update_weights_from_tensor",
+          [](RecMaster& self,
+             const std::vector<std::pair<std::string, torch::Tensor>>& weights,
+             bool is_last) {
+            return self.update_weights_from_tensor(weights, is_last);
+          },
+          py::arg("weights"),
+          py::arg("is_last"),
+          py::call_guard<py::gil_scoped_release>())
       .def("rec_type", &RecMaster::rec_type)
       .def(
           "handle_text_request",

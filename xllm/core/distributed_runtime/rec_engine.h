@@ -53,6 +53,10 @@ class RecEngine : public Engine {
 
   bool wakeup(const WakeupOptions& options) override;
 
+  bool update_weights_from_tensor(
+      const std::vector<std::pair<std::string, torch::Tensor>>& weights,
+      bool is_last) override;
+
   void update_last_step_result(std::vector<Batch>& batch) override;
 
   std::vector<int64_t> get_active_activation_memory() const override;

@@ -303,10 +303,10 @@ class REC:
         self._max_decode_rounds = max_decode_rounds
 
     def finish(self) -> None:
-        # Explicitly destroy the RecMaster so its C++ destructor runs (frees NPU
-        # memory, joins worker threads). This is now safe: the MPMCThreadPool
-        # shutdown deadlock was fixed, so the destructor no longer hangs.
-        os.exit(0)  # exit() is safer than RecMaster.finish() because it kills all threads
+        # Offline shutdown. The graceful C++ teardown can hang (rec worker
+        # thread pools), so hard-exit. Ascend TBE subprocesses may print
+        # "main process disappeared" on exit; that is harmless shutdown noise.
+        os._exit(0)
 
     def sleep(self) -> None:
         """Release device HBM in place (SleepableAllocator) without destroying
@@ -321,6 +321,61 @@ class REC:
 
     def is_sleeping(self) -> bool:
         return self.master.is_sleeping()
+
+    def update_weights(self, weights: Any) -> None:
+        """RL weight hot-update from an iterator of (hf_name, torch.Tensor).
+
+        ``weights`` is an iterable/generator yielding ``(name, tensor)`` with
+        HuggingFace names (e.g. ``model.layers.0.self_attn.q_proj.weight``) and
+        FULL tensors already on this process's NPU device. Tensors are streamed
+        in per-layer batches: each batch is staged to host, and on the final
+        batch all pipeline models merge in place into the wake_up'd weight
+        buffers (fused qkv/gate_up split + NZ conversion done internally).
+        Blocking: returns once all weights are written. Requires the engine to
+        have been created with ``enable_sleep_mode=True`` (kManual loader).
+
+        Grouping by layer only bounds per-call size; the C++ side accumulates
+        across batches in the host staging buffers and merges once at the end.
+        Streamed: each layer is dispatched as soon as it is complete and its
+        Python tensor refs are then dropped, so the trainer can free that
+        layer's device memory before the next layer is pulled (peak holds at
+        most one layer, not the whole model).
+        """
+        import re
+
+        layer_re = re.compile(r"(.*layers\.\d+)\.")
+
+        pending = None  # the just-completed batch, held back so the final
+        # batch can be flagged is_last (we only know a batch was the last one
+        # after the iterator is exhausted).
+
+        def _flush(batch, is_last):
+            self.master.update_weights_from_tensor(batch, is_last)
+
+        cur_key = None
+        cur = []
+        for name, tensor in weights:
+            if not tensor.is_contiguous():
+                tensor = tensor.contiguous()
+            m = layer_re.match(name)
+            key = m.group(1) if m else name.split(".")[0]
+            if cur_key is not None and key != cur_key and cur:
+                # A layer just completed. Flush the previously-held batch (not
+                # last, since we have more), then hold the current one.
+                if pending is not None:
+                    _flush(pending, is_last=False)
+                pending = cur
+                cur = []
+            cur_key = key
+            cur.append((name, tensor))
+
+        # Drain: flush the held batch, then the final one with is_last=True.
+        if cur:
+            if pending is not None:
+                _flush(pending, is_last=False)
+            _flush(cur, is_last=True)
+        elif pending is not None:
+            _flush(pending, is_last=True)
 
     def generate(
         self,

@@ -24,6 +24,7 @@ limitations under the License.
 namespace xllm {
 struct ModelInputParams;
 struct ModelGraphMetadataState;
+class StateDict;
 
 namespace layer {
 class LmHead;
@@ -97,6 +98,24 @@ template <typename T>
 struct has_free_model_weights<
     T,
     std::void_t<decltype(std::declval<T>()->free_model_weights())>>
+    : std::true_type {};
+
+template <typename T, typename = void>
+struct has_load_state_dict_partial : std::false_type {};
+
+template <typename T>
+struct has_load_state_dict_partial<
+    T,
+    std::void_t<decltype(std::declval<T>()->load_state_dict_partial(
+        std::declval<const StateDict&>()))>> : std::true_type {};
+
+template <typename T, typename = void>
+struct has_merge_staged_weights : std::false_type {};
+
+template <typename T>
+struct has_merge_staged_weights<
+    T,
+    std::void_t<decltype(std::declval<T>()->merge_staged_weights())>>
     : std::true_type {};
 
 template <typename T, typename = void>

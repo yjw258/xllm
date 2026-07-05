@@ -54,6 +54,10 @@ class Worker {
 
   bool update_weights(const std::string& weights_path);
 
+  bool update_weights_from_tensor(
+      const std::vector<std::pair<std::string, torch::Tensor>>& weights,
+      bool is_last);
+
   folly::SemiFuture<bool> wakeup_async(const WakeupOptions& options);
 
   // Start/stop online timeline profiling on this worker's device.

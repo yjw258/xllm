@@ -225,6 +225,12 @@ bool Worker::update_weights(const std::string& weights_path) {
   return impl_->update_weights(weights_path);
 }
 
+bool Worker::update_weights_from_tensor(
+    const std::vector<std::pair<std::string, torch::Tensor>>& weights,
+    bool is_last) {
+  return impl_->update_weights_from_tensor(weights, is_last);
+}
+
 folly::SemiFuture<bool> Worker::wakeup_async(const WakeupOptions& options) {
   folly::Promise<bool> promise;
   auto future = promise.getSemiFuture();

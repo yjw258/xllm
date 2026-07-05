@@ -52,6 +52,7 @@ limitations under the License.
 #include "framework/sampling/rec_constrained_decoding.h"
 #include "framework/sampling/rec_sampler.h"
 #include "framework/state_dict/rec_vocab_dict.h"
+#include "framework/state_dict/state_dict.h"
 #include "models/model_registry.h"
 #include "util/env_var.h"
 #include "util/timer.h"
@@ -3004,6 +3005,39 @@ bool RecWorkerImpl::wakeup(const WakeupOptions& options) {
     }
   }
   return ok;
+}
+
+bool RecWorkerImpl::update_weights_from_tensor(
+    const std::vector<std::pair<std::string, torch::Tensor>>& weights,
+    bool is_last) {
+  CHECK(!work_pipelines_.empty())
+      << "Model instances are not initialized. Call init_model() first.";
+  device_.set_device();
+
+  // Stage this batch into every pipeline model's host buffers. Tensors are the
+  // trainer's device tensors (same process); load_state_dict copies them to
+  // host (kManual), so the caller may free them after this returns. Batches
+  // accumulate across calls; the merge happens once on is_last.
+  if (!weights.empty()) {
+    std::unordered_map<std::string, torch::Tensor> dict;
+    dict.reserve(weights.size());
+    for (const auto& [name, tensor] : weights) {
+      dict.emplace(name, tensor);
+    }
+    for (auto& pipeline : work_pipelines_) {
+      StateDict state_dict(dict);
+      pipeline->runtime().model->load_state_dict_partial(state_dict);
+    }
+  }
+
+  if (is_last) {
+    for (auto& pipeline : work_pipelines_) {
+      pipeline->runtime().model->merge_staged_weights();
+    }
+    LOG(INFO) << "update_weights_from_tensor: merged into "
+              << work_pipelines_.size() << " model instance(s)";
+  }
+  return true;
 }
 
 bool RecWorkerImpl::init_model(const std::string& model_weights_path,

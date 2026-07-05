@@ -69,6 +69,12 @@ class RecMaster : public Master {
 
   bool wakeup() override;
 
+  // RL weight hot-update: forward streamed (HF-name, tensor) batches to the
+  // engine's local workers. is_last triggers the in-place merge.
+  bool update_weights_from_tensor(
+      const std::vector<std::pair<std::string, torch::Tensor>>& weights,
+      bool is_last);
+
   RecType rec_type() const { return rec_type_; }
 
  private:

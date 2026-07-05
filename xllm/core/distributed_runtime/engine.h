@@ -155,6 +155,13 @@ class Engine {
     return false;
   }
 
+  virtual bool update_weights_from_tensor(
+      const std::vector<std::pair<std::string, torch::Tensor>>& weights,
+      bool is_last) {
+    LOG(FATAL) << " update_weights_from_tensor is not implemented!";
+    return false;
+  }
+
   virtual bool wakeup(const WakeupOptions& options) {
     LOG(FATAL) << " wakeup is not implemented!";
     return false;
