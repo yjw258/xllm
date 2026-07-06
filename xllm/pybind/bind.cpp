@@ -49,7 +49,8 @@ namespace {
 // some of these via FLAGS_ and some via *Config::get_instance(); both sources
 // are set here and kept aligned (mirrors the c_api rec init path in
 // c_api/internal/rec.cpp).
-void configure_rec_runtime(int32_t beam_width,
+void configure_rec_runtime(Options& options,
+                           int32_t beam_width,
                            int32_t max_decode_rounds,
                            int32_t max_seqs_per_batch,
                            int32_t max_tokens_per_batch,
@@ -117,6 +118,16 @@ void configure_rec_runtime(int32_t beam_width,
 #if !defined(USE_NPU) && !defined(USE_CUDA)
   BeamSearchConfig::get_instance().enable_block_copy_kernel(false);
 #endif
+
+  // Keep dual-source settings aligned with the Config values above: rec reads
+  // beam_width / enable_graph / rec_worker_max_concurrency from BOTH Options
+  // (master/worker construction) and the singletons (runtime code), so derive
+  // the Options copies from the singletons here rather than having the caller
+  // set them a second time. Mirrors c_api/internal/rec.cpp.
+  options.enable_graph(ExecutionConfig::get_instance().enable_graph())
+      .beam_width(BeamSearchConfig::get_instance().beam_width())
+      .rec_worker_max_concurrency(
+          RecConfig::get_instance().rec_worker_max_concurrency());
 }
 
 }  // namespace
@@ -404,6 +415,7 @@ PYBIND11_MODULE(xllm_export, m) {
       .def_readwrite("beam_width", &RequestParams::beam_width)
       .def_readwrite("num_return_sequences",
                      &RequestParams::num_return_sequences)
+      .def_readwrite("per_token_logprobs", &RequestParams::per_token_logprobs)
       .def_readwrite("add_special_tokens", &RequestParams::add_special_tokens)
       .def_readwrite("is_sample_request", &RequestParams::is_sample_request)
       .def_readwrite("sample_slots", &RequestParams::sample_slots);
@@ -581,6 +593,7 @@ PYBIND11_MODULE(xllm_export, m) {
         py::arg("model_type"));
   m.def("configure_rec_runtime",
         &configure_rec_runtime,
+        py::arg("options"),
         py::arg("beam_width"),
         py::arg("max_decode_rounds"),
         py::arg("max_seqs_per_batch"),

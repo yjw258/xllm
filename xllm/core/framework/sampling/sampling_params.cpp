@@ -52,6 +52,7 @@ void SamplingParameters::init(
   int64_t max_top_logprobs = 0;
   bool is_embeddings = false;
   int32_t num_return_sequences = 0;
+  bool per_token_logprobs = false;
   for (const auto* p : req_sampling_params) {
     frequency_penalties.push_back(p->frequency_penalty);
     presence_penalties.push_back(p->presence_penalty);
@@ -64,6 +65,7 @@ void SamplingParameters::init(
     max_top_logprobs = std::max(max_top_logprobs, p->top_logprobs);
     num_return_sequences =
         std::max(num_return_sequences, p->num_return_sequences);
+    per_token_logprobs = per_token_logprobs || p->per_token_logprobs;
     if (p->beam_width > 0) {
       use_beam_search = true;
     }
@@ -151,6 +153,7 @@ void SamplingParameters::init(
   this->max_top_logprobs = max_top_logprobs;
   this->is_embeddings = is_embeddings;
   this->num_return_sequences = num_return_sequences;
+  this->per_token_logprobs = per_token_logprobs;
   if (this->do_sample.defined()) {
     this->all_random_sample = this->do_sample.all().item<bool>();
     this->all_greedy_sample = !this->do_sample.any().item<bool>();
@@ -197,6 +200,8 @@ void SamplingParameters::concat(const SamplingParameters& param) {
       std::max(this->max_top_logprobs, param.max_top_logprobs);
   this->num_return_sequences =
       std::max(this->num_return_sequences, param.num_return_sequences);
+  this->per_token_logprobs =
+      this->per_token_logprobs || param.per_token_logprobs;
   return;
 }
 

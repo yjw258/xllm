@@ -923,6 +923,10 @@ struct ForwardOutput {
 
   BeamSearchOutput beam_search_output;
   torch::Tensor beam_sequence_group;
+  // Per-token logprob history for Rec multi-round beam search,
+  // shape [batch_size, result_width, total_rounds]; beam_logprob_group[g][b][r]
+  // is the logprob of the r-th token of beam b in group g.
+  torch::Tensor beam_logprob_group;
 
   // dit output data
   DiTForwardOutput dit_forward_output;

@@ -33,13 +33,11 @@ _RequestParamsListLike = Optional[
 ]
 _OutputCallback = Callable[[RequestOutput], bool]
 
-# model_types REC supports, mirroring core/util/rec_model_utils.h:
-#   OneRec -> "onerec"; LlmRec (generative recommendation) -> qwen2/qwen3/qwen3_moe.
+# model_types REC supports: OneRec -> "onerec"; LlmRec -> qwen2/qwen3/qwen3_moe.
 _REC_MODEL_TYPES = frozenset({"onerec", "qwen2", "qwen3", "qwen3_moe"})
 
-# Default per-request timeout (seconds) to avoid blocking forever when a request
-# never produces a terminal status.
-_DEFAULT_TIMEOUT = 300.0
+# Default per-request timeout in milliseconds. 0 = no timeout (wait forever).
+_DEFAULT_TIMEOUT_MS = 0
 
 
 def _get_tqdm(
@@ -75,8 +73,7 @@ def _make_callback(
         should_complete = False
         with state.lock:
             state.output = output
-            # Align with the c_api rec path (helper.cpp handle_inference_request):
-            # a request is complete once its RequestOutput carries a status.
+            # A request is complete once its RequestOutput carries a status.
             if not state.completed and output.status is not None:
                 state.completed = True
                 should_complete = True
@@ -91,10 +88,12 @@ def _make_callback(
 
 def _wait_for_output(
     state: _OutputState,
-    timeout: Optional[float],
+    timeout_ms: int,
 ) -> RequestOutput:
-    if not state.event.wait(timeout):
-        raise TimeoutError("REC request timed out")
+    # timeout_ms == 0 waits indefinitely; otherwise convert ms to seconds.
+    wait_seconds = None if timeout_ms <= 0 else timeout_ms / 1000.0
+    if not state.event.wait(wait_seconds):
+        raise TimeoutError(f"REC request timed out after {timeout_ms} ms")
     output = state.output
     if output is None:
         raise RuntimeError("REC request finished without output")
@@ -120,6 +119,45 @@ def _to_rec_request_params_list(
     ]
 
 
+def _normalize_prompts(prompts):
+    """Normalize accepted prompt shapes into (prompt_list, is_token).
+
+      - str / list[str]              -> text prompts,     is_token=False
+      - list[int] / list[list[int]]  -> token-id prompts, is_token=True
+
+    Raises TypeError on empty/mixed/unknown shapes.
+    """
+    if isinstance(prompts, str):
+        return [prompts], False
+
+    if not isinstance(prompts, (list, tuple)):
+        raise TypeError(
+            "prompts must be str, list[str], list[int], or list[list[int]]")
+
+    items = list(prompts)
+    if len(items) == 0:
+        return [], False
+
+    # A bare list[int] is a single token-id prompt.
+    if all(isinstance(x, int) and not isinstance(x, bool) for x in items):
+        return [list(items)], True
+
+    is_text = [isinstance(x, str) for x in items]
+    is_token = [
+        isinstance(x, (list, tuple))
+        and len(x) > 0
+        and all(isinstance(t, int) and not isinstance(t, bool) for t in x)
+        for x in items
+    ]
+    if all(is_text):
+        return items, False
+    if all(is_token):
+        return [list(x) for x in items], True
+    raise TypeError(
+        "prompts must be all text (str) or all token-id (list[int]); "
+        "mixed or malformed prompts are not supported")
+
+
 class REC:
     """Offline generative-recommendation engine (backend == "rec").
 
@@ -127,10 +165,10 @@ class REC:
     ``generate`` with text prompts, then ``finish``. Supports LlmRec models
     (qwen2/qwen3/qwen3_moe) and OneRec.
 
-    NOTE: the default startup config (mirroring the c_api rec preset) enables
-    beam multi-round mode (``beam_width=128``, ``max_decode_rounds=3``), so
-    ``generate`` runs through the beam pipeline by default. For plain
-    (non-beam) generation, construct with ``beam_width=1, max_decode_rounds=0``.
+    NOTE: the default startup config enables beam multi-round mode
+    (``beam_width=128``, ``max_decode_rounds=3``), so ``generate`` runs through
+    the beam pipeline by default. For plain (non-beam) generation, construct
+    with ``beam_width=1, max_decode_rounds=0``.
     """
 
     def __init__(
@@ -165,7 +203,7 @@ class REC:
         enable_pd_ooc: bool = False,
         enable_schedule_overlap: bool = False,
         kv_cache_transfer_mode: str = "PUSH",
-        enable_graph: bool = True,
+        enable_graph: bool = False,
         enable_graph_mode_decode_no_padding: bool = True,
         enable_prefill_piecewise_graph: bool = True,
         enable_shm: bool = False,
@@ -174,8 +212,7 @@ class REC:
         output_shm_size: int = 128,
         disable_log_stats: bool = True,
         enable_sleep_mode: bool = False,
-        # Rec-specific knobs (no LLM equivalent). Defaults mirror the c_api rec
-        # preset XLLM_INIT_REC_OPTIONS_DEFAULT (xllm/c_api/default.h).
+        # Rec-specific knobs (no LLM equivalent).
         beam_width: int = 128,
         max_decode_rounds: int = 3,
         rec_worker_max_concurrency: int = 2,
@@ -200,9 +237,6 @@ class REC:
         if not os.path.exists(model):
             raise ValueError(f"model {model} not exists")
 
-        # backend for a rec model_type is "llm" in the registry (only "onerec"
-        # registers as "rec"), so validate against the supported rec model_types
-        # rather than the registry backend, then force backend="rec" below.
         model_type, _ = utils._infer_model_type_and_backend(model)
         if model_type is None:
             raise ValueError("model_type is required for REC inference")
@@ -249,7 +283,6 @@ class REC:
         options.enable_pd_ooc = enable_pd_ooc
         options.enable_schedule_overlap = enable_schedule_overlap
         options.kv_cache_transfer_mode = kv_cache_transfer_mode
-        options.enable_graph = enable_graph
         options.enable_graph_mode_decode_no_padding = enable_graph_mode_decode_no_padding
         options.enable_prefill_piecewise_graph = enable_prefill_piecewise_graph
         options.enable_offline_inference = True
@@ -262,14 +295,14 @@ class REC:
         options.output_shm_size = output_shm_size
         options.disable_log_stats = disable_log_stats
         options.enable_sleep_mode = enable_sleep_mode
-        options.beam_width = beam_width
-        options.rec_worker_max_concurrency = rec_worker_max_concurrency
         options.server_idx = server_idx
         options.kv_cache_dtype = kv_cache_dtype
 
-        # Rec runtime knobs are read from a mix of FLAGS_ and *Config singletons;
-        # configure_rec_runtime sets both consistently (mirrors c_api rec init).
+        # Set rec runtime knobs (FLAGS_/*Config singletons) and derive the
+        # dual-source Options fields (beam_width / enable_graph /
+        # rec_worker_max_concurrency).
         configure_rec_runtime(
+            options,
             beam_width,
             max_decode_rounds,
             max_seqs_per_batch,
@@ -295,17 +328,12 @@ class REC:
         self.master = RecMaster(options)
         self.master.run()
 
-        # Startup-level beam config. LlmRec beam search reads beam_width from
-        # BeamSearchConfig (startup flag), not from per-request params, and only
-        # runs beam search when max_decode_rounds > 0. beam_search() validates
-        # against these to avoid silently degrading to single-sequence output.
+        # Startup beam config; beam_search() validates requests against these.
         self._startup_beam_width = beam_width
         self._max_decode_rounds = max_decode_rounds
 
     def finish(self) -> None:
-        # Offline shutdown. The graceful C++ teardown can hang (rec worker
-        # thread pools), so hard-exit. Ascend TBE subprocesses may print
-        # "main process disappeared" on exit; that is harmless shutdown noise.
+        # Hard-exit the process.
         os._exit(0)
 
     def sleep(self) -> None:
@@ -325,29 +353,19 @@ class REC:
     def update_weights(self, weights: Any) -> None:
         """RL weight hot-update from an iterator of (hf_name, torch.Tensor).
 
-        ``weights`` is an iterable/generator yielding ``(name, tensor)`` with
-        HuggingFace names (e.g. ``model.layers.0.self_attn.q_proj.weight``) and
-        FULL tensors already on this process's NPU device. Tensors are streamed
-        in per-layer batches: each batch is staged to host, and on the final
-        batch all pipeline models merge in place into the wake_up'd weight
-        buffers (fused qkv/gate_up split + NZ conversion done internally).
-        Blocking: returns once all weights are written. Requires the engine to
-        have been created with ``enable_sleep_mode=True`` (kManual loader).
-
-        Grouping by layer only bounds per-call size; the C++ side accumulates
-        across batches in the host staging buffers and merges once at the end.
-        Streamed: each layer is dispatched as soon as it is complete and its
-        Python tensor refs are then dropped, so the trainer can free that
-        layer's device memory before the next layer is pulled (peak holds at
-        most one layer, not the whole model).
+        ``weights`` yields ``(name, tensor)`` with HuggingFace names and FULL
+        tensors already on this process's NPU device. Tensors are streamed in
+        per-layer batches (peak holds ~one layer); on the final batch all
+        pipeline models merge in place into the wake_up'd weight buffers (fused
+        qkv/gate_up split + NZ conversion done internally). Blocking. Requires
+        the engine created with ``enable_sleep_mode=True`` (kManual loader).
         """
         import re
 
         layer_re = re.compile(r"(.*layers\.\d+)\.")
 
-        pending = None  # the just-completed batch, held back so the final
-        # batch can be flagged is_last (we only know a batch was the last one
-        # after the iterator is exhausted).
+        # Hold the just-completed batch so the last one can be flagged is_last.
+        pending = None
 
         def _flush(batch, is_last):
             self.master.update_weights_from_tensor(batch, is_last)
@@ -360,8 +378,7 @@ class REC:
             m = layer_re.match(name)
             key = m.group(1) if m else name.split(".")[0]
             if cur_key is not None and key != cur_key and cur:
-                # A layer just completed. Flush the previously-held batch (not
-                # last, since we have more), then hold the current one.
+                # Layer complete: flush the held batch, then hold the current one.
                 if pending is not None:
                     _flush(pending, is_last=False)
                 pending = cur
@@ -377,48 +394,18 @@ class REC:
         elif pending is not None:
             _flush(pending, is_last=True)
 
-    def generate(
-        self,
-        prompts: Union[str, Sequence[str]],
-        sampling_params: _RequestParamsListLike = None,
-        request_params: _RequestParamsListLike = None,
-        timeout: Optional[float] = _DEFAULT_TIMEOUT,
-        use_tqdm: Union[bool, Callable[..., Any]] = True,
-        **kwargs: Any,
-    ) -> List[RequestOutput]:
-        if kwargs:
-            unknown = ", ".join(sorted(kwargs.keys()))
-            raise TypeError(f"Unexpected keyword arguments: {unknown}")
-        if request_params is None:
-            request_params = sampling_params
-        elif sampling_params is not None:
-            raise ValueError(
-                "sampling_params and request_params cannot both be set"
-            )
-
-        if isinstance(prompts, str):
-            prompt_list = [prompts]
-        else:
-            prompt_list = list(prompts)
-        if not all(isinstance(prompt, str) for prompt in prompt_list):
-            raise TypeError("prompts must be str or sequence[str]")
-        if len(prompt_list) == 0:
-            return []
-
-        params_list = _to_rec_request_params_list(request_params, len(prompt_list))
-        if len(params_list) not in (1, len(prompt_list)):
-            raise ValueError(
-                "The number of request_params must be 1 or equal to the "
-                "number of prompts."
-            )
-
+    def _submit_and_collect(self, prompt_list, is_token, params_list, timeout_ms,
+                            use_tqdm):
+        """Submit each prompt (text or token-id) to the right master entry and
+        collect the outputs. Shared by generate() and beam_search()."""
         outputs: List[Optional[RequestOutput]] = [None] * len(prompt_list)
         states = [_OutputState() for _ in prompt_list]
         progress_bar = None
         progress_bar_lock = threading.Lock()
         tqdm_cls = _get_tqdm(use_tqdm)
         if tqdm_cls is not None:
-            progress_bar = tqdm_cls(total=len(prompt_list), desc="Processed prompts")
+            progress_bar = tqdm_cls(total=len(prompt_list),
+                                    desc="Processed prompts")
 
         def mark_progress() -> None:
             if progress_bar is not None:
@@ -429,11 +416,16 @@ class REC:
             for index, prompt in enumerate(prompt_list):
                 params = params_list[0 if len(params_list) == 1 else index]
                 callback = _make_callback(states[index], mark_progress)
-                self.master.handle_text_request(prompt, params, callback)
+                if is_token:
+                    self.master.handle_token_request(prompt, params, callback)
+                else:
+                    self.master.handle_text_request(prompt, params, callback)
 
             for index, state in enumerate(states):
-                output = _wait_for_output(state, timeout)
-                output.prompt = prompt_list[index]
+                output = _wait_for_output(state, timeout_ms)
+                # RequestOutput.prompt is a str field; stringify token-id prompts.
+                output.prompt = (str(prompt_list[index]) if is_token
+                                 else prompt_list[index])
                 outputs[index] = output
         finally:
             if progress_bar is not None:
@@ -441,33 +433,71 @@ class REC:
 
         return [output for output in outputs if output is not None]
 
-    def generate_tokens(
+    def generate(
         self,
-        prompt_tokens: Sequence[int],
-        request_params: Optional[_RequestParamsLike] = None,
-        timeout: Optional[float] = _DEFAULT_TIMEOUT,
-    ) -> RequestOutput:
-        token_ids = list(prompt_tokens)
-        if len(token_ids) == 0:
-            raise ValueError("prompt_tokens cannot be empty")
-        params = _to_rec_request_params_list(request_params, 1)[0]
-        state = _OutputState()
-        self.master.handle_token_request(token_ids, params, _make_callback(state))
-        return _wait_for_output(state, timeout)
+        prompts: Union[str, Sequence[str], Sequence[int], Sequence[Sequence[int]]],
+        sampling_params: Optional[Union[
+            SamplingParams,
+            List[SamplingParams],
+        ]] = None,
+        timeout_ms: int = _DEFAULT_TIMEOUT_MS,
+        use_tqdm: Union[bool, Callable[..., Any]] = True,
+        **kwargs: Any,
+    ) -> List[RequestOutput]:
+        """Run generation on text or pre-tokenized prompts.
+
+        prompts: str / list[str] (text) or list[int] / list[list[int]]
+        (token-id); text and token-id cannot be mixed in one call.
+
+        Accepts either ``sampling_params`` or ``request_params`` (via kwargs) --
+        aliases for the same params, cannot both be set. Mirrors LLM.generate.
+        """
+        request_params = kwargs.pop("request_params", None)
+        if kwargs:
+            unknown = ", ".join(sorted(kwargs.keys()))
+            raise TypeError(f"Unexpected keyword arguments: {unknown}")
+        if request_params is None:
+            request_params = sampling_params
+        elif sampling_params is not None:
+            raise ValueError(
+                "sampling_params and request_params cannot both be set"
+            )
+
+        prompt_list, is_token = _normalize_prompts(prompts)
+        if len(prompt_list) == 0:
+            return []
+
+        params_list = _to_rec_request_params_list(request_params, len(prompt_list))
+        if len(params_list) not in (1, len(prompt_list)):
+            raise ValueError(
+                "The number of request_params must be 1 or equal to the "
+                "number of prompts."
+            )
+
+        return self._submit_and_collect(
+            prompt_list, is_token, params_list, timeout_ms, use_tqdm)
 
     def beam_search(
         self,
-        prompts: Sequence[Sequence[int]],
-        beam_width: int = 4,
-        max_tokens: int = 512,
-        request_params: _RequestParamsListLike = None,
-        timeout: Optional[float] = _DEFAULT_TIMEOUT,
+        prompts: Union[str, Sequence[str], Sequence[int], Sequence[Sequence[int]]],
+        params: Optional[Union[RequestParams, BeamSearchParams]] = None,
+        timeout_ms: int = _DEFAULT_TIMEOUT_MS,
         use_tqdm: Union[bool, Callable[..., Any]] = True,
+        **kwargs: Any,
     ) -> List[RequestOutput]:
-        # LlmRec beam search only runs when the engine was started with
-        # max_decode_rounds > 0, and the effective beam width comes from the
-        # startup BeamSearchConfig, not per-request params. Reject configs that
-        # would silently produce single-sequence output instead of beams.
+        """Beam search on text or pre-tokenized prompts.
+
+        prompts: str / list[str] (text) or list[int] / list[list[int]]
+        (token-id); text and token-id cannot be mixed in one call. ``params`` is
+        a single RequestParams / BeamSearchParams (mirrors LLM.beam_search).
+        Pass ``per_token_logprobs=True`` (kwarg) for one logprob per token.
+        """
+        per_token_logprobs = kwargs.pop("per_token_logprobs", False)
+        if kwargs:
+            unknown = ", ".join(sorted(kwargs.keys()))
+            raise TypeError(f"Unexpected keyword arguments: {unknown}")
+
+        # Require max_decode_rounds > 0 and beam_width > 1 at startup.
         if self._max_decode_rounds < 1:
             raise ValueError(
                 "beam_search requires the engine to be started with "
@@ -480,56 +510,28 @@ class REC:
                 "beam_width > 1; construct REC(..., beam_width=N>1) "
                 f"(got {self._startup_beam_width})."
             )
-        if beam_width != self._startup_beam_width:
-            raise ValueError(
-                f"beam_width={beam_width} does not match the startup "
-                f"beam_width={self._startup_beam_width}; LlmRec beam search "
-                "uses the startup beam_width. Restart REC with the desired "
-                "beam_width or pass the matching value."
-            )
 
-        prompt_list = [list(prompt) for prompt in prompts]
-        if len(prompt_list) == 0:
-            return []
-        if not all(len(tokens) > 0 for tokens in prompt_list):
-            raise ValueError("each prompt token list must be non-empty")
+        # Set the fast-path defaults (beam_width, logprobs, top_logprobs, top_k)
+        # from the startup beam width, keeping fields the caller set explicitly.
+        explicit_fields = (
+            params.explicit_fields()
+            if isinstance(params, _RequestParamsProxy)
+            else set()
+        )
+        beam_params = to_request_params(params, default_cls=BeamSearchParams)
+        beam_params.beam_width = self._startup_beam_width
+        if "logprobs" not in explicit_fields:
+            beam_params.logprobs = True
+        if "top_logprobs" not in explicit_fields and beam_params.top_logprobs == 0:
+            beam_params.top_logprobs = self._startup_beam_width
+        if "top_k" not in explicit_fields and beam_params.top_k <= 0:
+            beam_params.top_k = self._startup_beam_width
+        if "per_token_logprobs" not in explicit_fields:
+            beam_params.per_token_logprobs = per_token_logprobs
 
-        if request_params is None:
-            request_params = BeamSearchParams(
-                beam_width=beam_width, max_tokens=max_tokens
-            )
-        params_list = _to_rec_request_params_list(request_params, len(prompt_list))
-        if len(params_list) not in (1, len(prompt_list)):
-            raise ValueError(
-                "The number of request_params must be 1 or equal to the "
-                "number of prompts."
-            )
-
-        outputs: List[Optional[RequestOutput]] = [None] * len(prompt_list)
-        states = [_OutputState() for _ in prompt_list]
-        progress_bar = None
-        progress_bar_lock = threading.Lock()
-        tqdm_cls = _get_tqdm(use_tqdm)
-        if tqdm_cls is not None:
-            progress_bar = tqdm_cls(total=len(prompt_list), desc="Processed prompts")
-
-        def mark_progress() -> None:
-            if progress_bar is not None:
-                with progress_bar_lock:
-                    progress_bar.update(1)
-
-        try:
-            for index, tokens in enumerate(prompt_list):
-                params = params_list[0 if len(params_list) == 1 else index]
-                callback = _make_callback(states[index], mark_progress)
-                self.master.handle_token_request(tokens, params, callback)
-
-            for index, state in enumerate(states):
-                output = _wait_for_output(state, timeout)
-                output.prompt = prompt_list[index]
-                outputs[index] = output
-        finally:
-            if progress_bar is not None:
-                progress_bar.close()
-
-        return [output for output in outputs if output is not None]
+        return self.generate(
+            prompts,
+            request_params=beam_params,
+            timeout_ms=timeout_ms,
+            use_tqdm=use_tqdm,
+        )

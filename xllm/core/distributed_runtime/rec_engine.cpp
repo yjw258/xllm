@@ -238,8 +238,6 @@ void RecEngine::update_last_step_result(std::vector<Batch>& batch) {
 }
 
 bool RecEngine::sleep(MasterStatus master_status) {
-  LOG(INFO) << "[DIAG] RecEngine::sleep: workers_=" << workers_.size()
-            << ", worker_clients_=" << worker_clients_.size();
   // Release device HBM in place via the SleepableAllocator path in each
   // WorkerImpl::rl_sleep(). RecMultiRound uses local workers_ (in-process);
   // the remote LlmRec pipeline uses worker_clients_. Fan out to whichever is
@@ -1035,6 +1033,11 @@ ForwardOutput RecEngine::OneRecXAttentionEnginePipeline::get_model_output(
         safe_to(output.beam_sequence_group, torch::kCPU, true);
     log_engine_stage("after_beam_sequence_group_to_cpu",
                      output.beam_sequence_group);
+    if (output.beam_logprob_group.defined() &&
+        output.beam_logprob_group.numel() > 0) {
+      output.beam_logprob_group =
+          safe_to(output.beam_logprob_group, torch::kCPU, true);
+    }
   }
   if (output.beam_search_output.out_logprobs.defined() &&
       output.beam_search_output.out_logprobs.numel() > 0) {
@@ -1260,6 +1263,9 @@ ForwardOutput RecEngine::RecMultiRoundEnginePipeline::get_model_output(
   auto& output = forward_output.value();
   // TODO. uncomment this in next pr.
   output.beam_sequence_group = safe_to(output.beam_sequence_group, torch::kCPU);
+  if (output.beam_logprob_group.defined()) {
+    output.beam_logprob_group = safe_to(output.beam_logprob_group, torch::kCPU);
+  }
   if (output.beam_search_output.out_logprobs.defined()) {
     output.beam_search_output.out_logprobs =
         safe_to(output.beam_search_output.out_logprobs, torch::kCPU);

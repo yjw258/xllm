@@ -595,14 +595,22 @@ void Batch::process_beam_sequence_group(const ForwardOutput& output) {
   bool has_logprobs = output.beam_search_output.out_logprobs.defined() &&
                       output.beam_search_output.out_logprobs.numel() > 0;
 
+  // Per-token logprob history [batch, result_width, total_rounds], on CPU.
+  bool has_per_token_logprobs = output.beam_logprob_group.defined() &&
+                                output.beam_logprob_group.numel() > 0 &&
+                                output.beam_logprob_group.dim() == 3;
+
   std::vector<std::vector<int32_t>> group_flat2d;
   std::vector<float> last_logprobs;
+  std::vector<std::vector<float>> per_token_logprobs;
   group_flat2d.reserve(static_cast<size_t>(result_width));
   last_logprobs.reserve(static_cast<size_t>(result_width));
+  per_token_logprobs.reserve(static_cast<size_t>(result_width));
 
   for (size_t g = 0; g < num_groups; ++g) {
     group_flat2d.clear();
     last_logprobs.clear();
+    per_token_logprobs.clear();
 
     for (int b = 0; b < result_width; ++b) {
       std::vector<int32_t> row_tokens;
@@ -619,13 +627,26 @@ void Batch::process_beam_sequence_group(const ForwardOutput& output) {
         last_logprobs.push_back(
             output.beam_search_output.out_logprobs[logprob_idx].item<float>());
       }
+      if (has_per_token_logprobs) {
+        auto logprob_group_accessor =
+            output.beam_logprob_group.accessor<float, 3>();
+        std::vector<float> row_logprobs;
+        row_logprobs.reserve(static_cast<size_t>(total_rounds));
+        for (int c = 0; c < total_rounds; ++c) {
+          row_logprobs.push_back(logprob_group_accessor[g][b][c]);
+        }
+        per_token_logprobs.emplace_back(std::move(row_logprobs));
+      }
     }
     // Access sequence from sequence_groups_ if available
     Sequence* seq = sequence_groups_.empty()
                         ? sequences[g]
                         : sequence_groups_[g]->sequences()[0].get();
-    seq->set_beam_result(
-        result_width, total_rounds, group_flat2d, last_logprobs);
+    seq->set_beam_result(result_width,
+                         total_rounds,
+                         group_flat2d,
+                         last_logprobs,
+                         per_token_logprobs);
   }
 }
 

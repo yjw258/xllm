@@ -163,6 +163,12 @@ struct RequestParams {
   int32_t beam_width = 0;
   int32_t num_return_sequences = 0;
 
+  // When true, REC multi-round beam search returns one logprob per generated
+  // token (SequenceOutput.logprobs has total_rounds entries). When false
+  // (default), it returns a single accumulated logprob per sequence, preserving
+  // the legacy semantics.
+  bool per_token_logprobs = false;
+
   bool add_special_tokens = false;
 
   nlohmann::json chat_template_kwargs = nlohmann::json::object();

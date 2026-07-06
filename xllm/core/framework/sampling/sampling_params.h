@@ -37,6 +37,8 @@ struct RequestSamplingParam {
   bool is_embeddings = false;
   int32_t beam_width = 0;
   int32_t num_return_sequences = 0;
+  // See SamplingParameters::per_token_logprobs.
+  bool per_token_logprobs = false;
 };
 
 struct SamplingParameters {
@@ -87,6 +89,7 @@ struct SamplingParameters {
 
     // for beam search
     params.use_beam_search = use_beam_search;
+    params.per_token_logprobs = per_token_logprobs;
     return params;
   }
 
@@ -161,6 +164,11 @@ struct SamplingParameters {
 
   // for beam search
   bool use_beam_search = false;
+
+  // When true, REC multi-round beam search emits one logprob per generated
+  // token; when false (default) it emits a single accumulated logprob per
+  // sequence (legacy behavior).
+  bool per_token_logprobs = false;
 };
 
 struct SampleOutput {

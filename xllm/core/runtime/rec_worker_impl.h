@@ -257,6 +257,13 @@ class RecWorkerImpl : public LLMWorkerImpl {
       torch::Tensor out_token_index;  // [num_seq, 1]
       torch::Tensor out_beam_count_prefix_sums;  // [num_seq, 1]
       torch::Tensor out_seqgroup;  // [batch_size, beam_width, total_rounds]
+
+      // Per-token logprob history, kept in lockstep with sequence_group so that
+      // logprob_group[b, k, r] is the logprob of the r-th token of beam k. The
+      // parent-beam backtrack that reorders sequence_group is mirrored here.
+      torch::Tensor logprob_group;  // [batch_size, beam_width, total_rounds]
+      torch::Tensor
+          out_logprob_group;  // [batch_size, beam_width, total_rounds]
     };
 
     // Prepare beam search tensors
@@ -272,7 +279,8 @@ class RecWorkerImpl : public LLMWorkerImpl {
                              int32_t round,
                              int32_t batch_size,
                              int32_t requested_result_width,
-                             int32_t total_rounds);
+                             int32_t total_rounds,
+                             bool per_token_logprobs);
 
     void execute_final_beam_search(const torch::Tensor& top_tokens,
                                    const torch::Tensor& top_logprobs,

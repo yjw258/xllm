@@ -447,6 +447,7 @@ void SequencesGroup::generate_multi_round_output(
   });
 
   const auto& flat2d = base.beam_seq_group_flat();
+  const auto& per_token_lps = base.beam_per_token_logprobs();
   size_t rounds = static_cast<size_t>(base.total_rounds_cached());
   outputs.reserve(bw);
 
@@ -459,9 +460,23 @@ void SequencesGroup::generate_multi_round_output(
     out.text = tokenizer.decode(Slice<int32_t>{gen_ids.data(), gen_ids.size()},
                                 sequence_params_.skip_special_tokens);
     out.token_ids = std::move(gen_ids);
+    // Emit one LogProb per generated token when the per-token logprob history
+    // is available; otherwise fall back to a single accumulated logprob.
     std::vector<LogProb> log_probs;
-    log_probs.resize(1);
-    log_probs[0].logprob = rank[i].first;
+    if (b < per_token_lps.size() && !per_token_lps[b].empty()) {
+      const auto& row = per_token_lps[b];
+      size_t n = std::min(rounds, row.size());
+      log_probs.resize(n);
+      for (size_t r = 0; r < n; ++r) {
+        if (r < flat2d[b].size()) {
+          log_probs[r].token_id = flat2d[b][r];
+        }
+        log_probs[r].logprob = row[r];
+      }
+    } else {
+      log_probs.resize(1);
+      log_probs[0].logprob = rank[i].first;
+    }
     out.logprobs = log_probs;
 
     auto fr = base.finish_reason().to_string();

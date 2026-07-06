@@ -1843,8 +1843,10 @@ std::optional<ForwardOutput> RecWorkerImpl::OneRecXAttentionWorkPipeline::step(
       top_logprobs = result->sample_output.top_logprobs.reshape({-1, 1});
       beam_tensors.out_token_ids.copy_(top_tokens);
       beam_tensors.out_log_probs.copy_(top_logprobs);
+      // out_seqgroup.select(2,0) is [batch, beam]; reshape to that 2-D shape
+      // instead of a flat [batch*beam], which only broadcasts when batch == 1.
       beam_tensors.out_seqgroup.select(/*dim=*/2, /*index=*/0)
-          .copy_(top_tokens.reshape({-1}));
+          .copy_(top_tokens.reshape({batch_size, beam_width}));
     } else if (final_round && requested_result_width != beam_width) {
       top_tokens = result->sample_output.top_tokens.to(torch::kInt32);
       top_logprobs = result->sample_output.top_logprobs;
@@ -2338,7 +2340,8 @@ std::optional<ForwardOutput> RecWorkerImpl::LlmRecMultiRoundPipeline::step(
                             round,
                             batch_size,
                             requested_result_width,
-                            total_rounds);
+                            total_rounds,
+                            sampling_params.per_token_logprobs);
       }
 
       if (round > 0 && round < total_rounds - 1) {
@@ -2381,6 +2384,9 @@ RecWorkerImpl::LlmRecMultiRoundPipeline::prepare_beam_search_tensors(
   tensors.out_token_index = torch::zeros({num_seq, 1}, int_options);
   tensors.out_beam_count_prefix_sums = torch::zeros({num_seq, 1}, int_options);
   tensors.out_seqgroup = torch::zeros_like(tensors.sequence_group);
+  tensors.logprob_group =
+      torch::zeros({batch_size, beam_width, total_rounds}, fp32_options);
+  tensors.out_logprob_group = torch::zeros_like(tensors.logprob_group);
   return tensors;
 }
 
@@ -2391,15 +2397,21 @@ void RecWorkerImpl::LlmRecMultiRoundPipeline::execute_beam_search(
     int32_t round,
     int32_t batch_size,
     int32_t requested_result_width,
-    int32_t total_rounds) {
+    int32_t total_rounds,
+    bool per_token_logprobs) {
 #if defined(USE_NPU)
   (void)requested_result_width;
   (void)total_rounds;
   if (round == 0) {
     beam_tensors.out_token_ids.copy_(top_tokens.reshape({-1, 1}));
     beam_tensors.out_log_probs.copy_(top_logprobs.reshape({-1, 1}));
+    // out_seqgroup.select(2,0) is [batch, beam]; reshape the round-0 tokens to
+    // the same 2-D shape rather than a flat [batch*beam]. A flat source only
+    // broadcasts into [batch, beam] when batch == 1; batch > 1 would throw a
+    // shape-mismatch (e.g. src [128] vs dst [2, 64]).
+    const int64_t beam_w = beam_tensors.out_seqgroup.size(1);
     beam_tensors.out_seqgroup.select(/*dim=*/2, /*index=*/0)
-        .copy_(top_tokens.reshape({-1}));
+        .copy_(top_tokens.reshape({batch_size, beam_w}));
   } else {
     xllm::kernel::npu::beam_search_rec(
         /*logprobs=*/beam_tensors.acc_logprob,
@@ -2429,8 +2441,54 @@ void RecWorkerImpl::LlmRecMultiRoundPipeline::execute_beam_search(
                                   requested_result_width,
                                   round);
 #endif
+  // Maintain the per-token logprob history in lockstep with out_seqgroup.
+  // out_log_probs holds the NEW accumulated logprob per surviving beam,
+  // acc_logprob holds the OLD accumulated logprob indexed by parent beam, and
+  // out_token_index gives the parent-beam global index. The logprob of the
+  // token appended this round is therefore new_acc - parent_old_acc; the
+  // earlier columns are backtracked from the parent beam exactly like
+  // out_seqgroup. Round 0 has no parent (out_token_index is not produced), so
+  // the round-0 logprob is simply out_log_probs. Skipped entirely when the
+  // request did not ask for per-token logprobs.
+  if (per_token_logprobs) {
+    const int64_t bw = beam_tensors.logprob_group.size(1);
+    if (round == 0) {
+      beam_tensors.out_logprob_group.select(/*dim=*/2, /*index=*/0)
+          .copy_(beam_tensors.out_log_probs.view({batch_size, bw}));
+    } else {
+      const auto long_options = torch::TensorOptions()
+                                    .dtype(torch::kLong)
+                                    .device(top_tokens.device());
+      const torch::Tensor batch_offsets =
+          torch::arange(batch_size, long_options).unsqueeze(1) * bw;
+      const torch::Tensor parent_local =
+          beam_tensors.out_token_index.view({batch_size, bw}).to(torch::kLong) -
+          batch_offsets;
+      const torch::Tensor batch_range =
+          torch::arange(batch_size, long_options)
+              .unsqueeze(1)
+              .expand({static_cast<int64_t>(batch_size), bw});
+      using torch::indexing::Slice;
+      using torch::indexing::TensorIndex;
+      beam_tensors.out_logprob_group.slice(/*dim=*/2, /*start=*/0, round)
+          .copy_(beam_tensors.logprob_group.index({TensorIndex(batch_range),
+                                                   TensorIndex(parent_local),
+                                                   Slice(0, round)}));
+      const torch::Tensor new_acc =
+          beam_tensors.out_log_probs.view({batch_size, bw});
+      const torch::Tensor parent_old_acc =
+          beam_tensors.acc_logprob.view({batch_size, bw})
+              .gather(1, parent_local);
+      beam_tensors.out_logprob_group.select(/*dim=*/2, /*index=*/round)
+          .copy_(new_acc - parent_old_acc);
+    }
+  }
+
   std::swap(beam_tensors.sequence_group, beam_tensors.out_seqgroup);
   std::swap(beam_tensors.acc_logprob, beam_tensors.out_log_probs);
+  if (per_token_logprobs) {
+    std::swap(beam_tensors.logprob_group, beam_tensors.out_logprob_group);
+  }
 }
 
 void RecWorkerImpl::LlmRecMultiRoundPipeline::execute_final_beam_search(
@@ -2452,6 +2510,11 @@ void RecWorkerImpl::LlmRecMultiRoundPipeline::execute_final_beam_search(
 
   std::swap(beam_tensors.sequence_group, beam_tensors.out_seqgroup);
   std::swap(beam_tensors.acc_logprob, beam_tensors.out_log_probs);
+  // The widened final-round path (num_return_sequences != beam_width) reorders
+  // beams through a separate selection that does not carry the per-token
+  // logprob history, so it would be misaligned with the new beam layout.
+  // Invalidate it; downstream falls back to the accumulated logprob.
+  beam_tensors.logprob_group = torch::Tensor();
 }
 
 void RecWorkerImpl::LlmRecMultiRoundPipeline::execute_cache_select(
@@ -2522,6 +2585,12 @@ void RecWorkerImpl::LlmRecMultiRoundPipeline::build_final_output(
   output.beam_search_output.out_logprobs =
       beam_tensors.acc_logprob.reshape({-1});
   output.beam_sequence_group = beam_tensors.sequence_group;
+  // Only surface the per-token logprob history when it was requested and thus
+  // actually maintained; otherwise leave it undefined so downstream falls back
+  // to the accumulated logprob.
+  if (sampling_params.per_token_logprobs) {
+    output.beam_logprob_group = beam_tensors.logprob_group;
+  }
 }
 
 void RecWorkerImpl::LlmRecMultiRoundPipeline::prepare_two_stage_round_input(
