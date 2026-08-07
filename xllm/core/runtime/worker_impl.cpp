@@ -1418,6 +1418,12 @@ bool WorkerImpl::init_model(const std::string& model_weights_path,
     const bool is_dspark = options_.speculative_algorithm() == "DSpark";
     const char* draft_model_type =
         is_dspark ? "DSparkDraftModel" : "DFlashDraftModel";
+    // Draft always runs a multi-token block query. Target uses a SplitFuse
+    // prefill graph when validation uses the ATB speculative kernel.
+    const bool enable_block_append_attention =
+        options_.is_draft_engine() ||
+        ::xllm::SpeculativeConfig::get_instance().enable_atb_spec_kernel();
+    args.enable_block_append_attention(enable_block_append_attention);
     std::string draft_config_path;
     if (options_.is_draft_engine()) {
       LOG(INFO) << "Overriding draft model_type from " << args.model_type()

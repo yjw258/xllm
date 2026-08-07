@@ -82,7 +82,8 @@ class NpuQwen3DecoderLayerImpl : public BaseLayer {
                                ModelInputParams& input_params,
                                bool is_prefill,
                                int node_id,
-                               bool use_graph_decode_input);
+                               bool use_graph_decode_input,
+                               bool use_q_seq_lens);
 
   void initialize_parallel_parameters(atb_speed::qwen::QwenLayerParam& param,
                                       const ParallelArgs& parallel_args);
@@ -114,6 +115,7 @@ class NpuQwen3DecoderLayerImpl : public BaseLayer {
   int32_t layer_id_;
   int rank_id_;
   int32_t num_hidden_layers_;
+  bool enable_block_append_attention_ = false;
   std::vector<std::shared_ptr<at::Tensor>> prefill_tensor_storage_;
   std::vector<std::shared_ptr<at::Tensor>> decode_tensor_storage_;
   std::vector<std::shared_ptr<std::vector<int>>> prefill_vector_storage_;

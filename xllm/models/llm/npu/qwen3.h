@@ -63,9 +63,11 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
         model_args.max_position_embeddings(),
         model_args.rope_theta(),
         options);
-    int32_t mask_value =
-        ::xllm::SchedulerConfig::get_instance().enable_chunked_prefill() ? -9984
-                                                                         : 1;
+    enable_block_append_attention_ = model_args.enable_block_append_attention();
+    const bool use_append_attention =
+        ::xllm::SchedulerConfig::get_instance().enable_chunked_prefill() ||
+        enable_block_append_attention_;
+    int32_t mask_value = use_append_attention ? -9984 : 1;
     // encode_attn_mask_ =
     //   layer::AttentionMask(options.device(),
     //   options.dtype()).get_attn_mask(2048, options.device(),
@@ -185,9 +187,17 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
     }
 
     torch::Tensor attn_mask;
-    // for chunked prefill, generate the attn mask.
+    // Generate an append-attention mask for scheduler chunking or an explicit
+    // block-diffusion query/verification input.
     if (!input_params.meta.batch_forward_type.is_decode()) {
-      if (::xllm::SchedulerConfig::get_instance().enable_chunked_prefill()) {
+      const bool use_block_append_attention =
+          input_params.attention.use_block_append_attention;
+      CHECK(!use_block_append_attention || enable_block_append_attention_)
+          << "Qwen3 block append attention was not enabled for this model.";
+      const bool use_append_attention =
+          ::xllm::SchedulerConfig::get_instance().enable_chunked_prefill() ||
+          enable_block_append_attention_;
+      if (use_append_attention) {
         int32_t max_kv_seq = input_params.meta.kv_max_seq_len;
         int32_t num_sequences = input_params.meta.num_sequences;
         if (num_sequences > 0) {
@@ -195,12 +205,22 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
           req_mask_vec.reserve(num_sequences);
 
           for (int32_t j = 0; j < num_sequences; j++) {
-            torch::Tensor mask =
-                gen_append_attn_mask(input_params.attention.host.q_seq_lens[j],
-                                     input_params.attention.host.kv_seq_lens[j],
-                                     max_kv_seq,
-                                     cos_pos.dtype().toScalarType(),
-                                     cos_pos.device());
+            torch::Tensor mask;
+            if (use_block_append_attention) {
+              mask = gen_block_append_attn_mask(
+                  input_params.attention.host.q_seq_lens[j],
+                  input_params.attention.host.kv_seq_lens[j],
+                  max_kv_seq,
+                  cos_pos.dtype().toScalarType(),
+                  cos_pos.device());
+            } else {
+              mask = attn_mask_.gen_append_mask(
+                  input_params.attention.host.q_seq_lens[j],
+                  input_params.attention.host.kv_seq_lens[j],
+                  max_kv_seq,
+                  cos_pos.dtype().toScalarType(),
+                  cos_pos.device());
+            }
             req_mask_vec.emplace_back(mask);
           }
           attn_mask = torch::cat(req_mask_vec, 0);
@@ -275,17 +295,18 @@ class QWen3ModelImpl : public LlmModelImplBase<QWen3DecoderLayer> {
   }
 
  protected:
-  virtual torch::Tensor gen_append_attn_mask(int32_t q_len,
-                                             int32_t kv_len,
-                                             int32_t max_kv_len,
-                                             torch::Dtype dtype,
-                                             torch::Device device) {
+  virtual torch::Tensor gen_block_append_attn_mask(int32_t q_len,
+                                                   int32_t kv_len,
+                                                   int32_t max_kv_len,
+                                                   torch::Dtype dtype,
+                                                   torch::Device device) {
     return attn_mask_.gen_append_mask(q_len, kv_len, max_kv_len, dtype, device);
   }
 
  private:
   torch::Tensor viusal_pos_mask_;
   std::unordered_set<int32_t> layers_to_capture_set_;
+  bool enable_block_append_attention_ = false;
   bool capture_aux_hidden_states_ = false;
   torch::Tensor aux_output_buffer_;
 };

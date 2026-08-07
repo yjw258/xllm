@@ -102,11 +102,11 @@ class DFlashQwen3ModelImpl : public QWen3ModelImpl {
   }
 
  protected:
-  torch::Tensor gen_append_attn_mask(int32_t q_len,
-                                     int32_t kv_len,
-                                     int32_t max_kv_len,
-                                     torch::Dtype dtype,
-                                     torch::Device device) override {
+  torch::Tensor gen_block_append_attn_mask(int32_t q_len,
+                                           int32_t kv_len,
+                                           int32_t max_kv_len,
+                                           torch::Dtype dtype,
+                                           torch::Device device) override {
     // Block-diffusion draft attends the full context non-causally: every draft
     // position sees the whole block, so all q_len rows share one kv-only mask.
     // Do not restore a causal (per-row diagonal) mask here.

@@ -425,6 +425,7 @@ struct AttentionInput {
 
   AttentionHostInput host;
   AttentionDeviceInput device;
+  bool use_block_append_attention = false;
   torch::Tensor attention_host_buffer;
   torch::Tensor attention_device_buffer;
   uint64_t attention_buffer_bytes = 0;
@@ -435,6 +436,7 @@ struct AttentionInput {
     AttentionInput out;
     out.host = host;
     out.device = device.to(target_device);
+    out.use_block_append_attention = use_block_append_attention;
     out.attention_host_buffer = attention_host_buffer;
     out.attention_device_buffer = attention_device_buffer;
     out.attention_buffer_bytes = attention_buffer_bytes;

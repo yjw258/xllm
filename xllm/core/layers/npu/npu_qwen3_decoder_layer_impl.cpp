@@ -57,7 +57,8 @@ void NpuQwen3DecoderLayerImpl::param_from_args(
   param.isPrefill = isPrefill;
   param.isBF16 = args.dtype() == "bfloat16";
   param.enableSplitFuse =
-      ::xllm::SchedulerConfig::get_instance().enable_chunked_prefill() &&
+      (::xllm::SchedulerConfig::get_instance().enable_chunked_prefill() ||
+       args.enable_block_append_attention()) &&
       isPrefill;
   param.loraEnableGMM = false;
   param.enableXattention = is_rec_multi_round_mode();
@@ -115,16 +116,17 @@ void NpuQwen3DecoderLayerImpl::param_from_args(
         param.enableIntraLayerAddNorm && quantize_type_.empty()
             ? false
             : quantize_type_.empty();
-    // for prefix cache without chunked prefill.
+    // for prefix cache without a SplitFuse prefill graph.
     if (::xllm::KVCacheConfig::get_instance().enable_prefix_cache() &&
-        !::xllm::SchedulerConfig::get_instance().enable_chunked_prefill() &&
+        !param.enableSplitFuse &&
         ::xllm::KVCacheConfig::get_instance().block_size() != 128) {
-      LOG(ERROR) << "try to enable prefix cache without chunked prefill but "
-                    "failed, because the block_size is required to be 128.";
+      LOG(ERROR) << "try to enable prefix cache without a SplitFuse prefill "
+                    "graph but failed, because the block_size is required to "
+                    "be 128.";
     }
     param.isPrefixCacheWithoutChunk =
         ::xllm::KVCacheConfig::get_instance().enable_prefix_cache() &&
-        !::xllm::SchedulerConfig::get_instance().enable_chunked_prefill() &&
+        !param.enableSplitFuse &&
         ::xllm::KVCacheConfig::get_instance().block_size() == 128;
   }
   num_hidden_layers_ = args.n_layers();
@@ -196,6 +198,7 @@ NpuQwen3DecoderLayerImpl::NpuQwen3DecoderLayerImpl(const ModelContext& context)
   auto options = context.get_tensor_options();
 
   param_from_args(prefill_param_, model_args, parallel_args, true);
+  enable_block_append_attention_ = model_args.enable_block_append_attention();
   param_from_args(decode_graph_param_, model_args, parallel_args, false);
   decode_eager_param_ = decode_graph_param_;
   decode_eager_param_.enableAclGraphPagedAttention = false;
@@ -307,6 +310,14 @@ torch::Tensor NpuQwen3DecoderLayerImpl::forward(torch::Tensor& x,
                                                 int node_id) {
   atb::Status st;
   if (!input_params.meta.batch_forward_type.is_decode()) {
+    const bool use_block_append_attention =
+        input_params.attention.use_block_append_attention;
+    CHECK(!use_block_append_attention || enable_block_append_attention_)
+        << "Qwen3 block append attention was not enabled for this model.";
+    CHECK(!use_block_append_attention || prefill_param_.enableSplitFuse)
+        << "Qwen3 block append attention requires a SplitFuse prefill graph.";
+    const bool use_q_seq_lens = prefill_param_.enableSplitFuse ||
+                                prefill_param_.isPrefixCacheWithoutChunk;
     build_node_variant_pack(prefill_node_,
                             x,
                             cos_pos,
@@ -316,7 +327,8 @@ torch::Tensor NpuQwen3DecoderLayerImpl::forward(torch::Tensor& x,
                             input_params,
                             /*is_prefill=*/true,
                             node_id,
-                            /*use_graph_decode_input=*/false);
+                            /*use_graph_decode_input=*/false,
+                            use_q_seq_lens);
     // mstxRangeEnd(id);
     st = execute_node(prefill_node_, node_id, event, event_flag);
     LOG_IF(FATAL, st != 0) << model_name_
@@ -336,7 +348,8 @@ torch::Tensor NpuQwen3DecoderLayerImpl::forward(torch::Tensor& x,
                             input_params,
                             /*is_prefill=*/false,
                             node_id,
-                            use_graph_decode_input);
+                            use_graph_decode_input,
+                            /*use_q_seq_lens=*/false);
     st = execute_node(decode_node, node_id + 1000, event, event_flag);
     LOG_IF(FATAL, st != 0) << model_name_
                            << "execute decode layer fail, error code: " << st;
@@ -355,7 +368,8 @@ void NpuQwen3DecoderLayerImpl::build_node_variant_pack(
     ModelInputParams& input_params,
     bool is_prefill,
     int node_id,
-    bool use_graph_decode_input) {
+    bool use_graph_decode_input,
+    bool use_q_seq_lens) {
   internal_tensors_ = atb_speed::Utils::AtTensor2Tensor(x);
   if (::xllm::KernelConfig::get_instance().enable_interlayer_addnorm() &&
       residual_.defined()) {
@@ -418,9 +432,7 @@ void NpuQwen3DecoderLayerImpl::build_node_variant_pack(
             input_params.attention.device.new_cache_slots);
   }
 
-  if (is_prefill &&
-      (::xllm::SchedulerConfig::get_instance().enable_chunked_prefill() ||
-       ::xllm::KVCacheConfig::get_instance().enable_prefix_cache())) {
+  if (is_prefill && use_q_seq_lens) {
     node.variantPack.inTensors.at(input_idx++) =
         atb_speed::Utils::AtTensor2Tensor(
             input_params.attention.device.q_seq_lens);

@@ -143,9 +143,11 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
         options);
 
     atb_pos_emb_ = layer::NpuPosEmbedding(context);
-    int32_t mask_value =
-        ::xllm::SchedulerConfig::get_instance().enable_chunked_prefill() ? -9984
-                                                                         : 1;
+    enable_block_append_attention_ = model_args.enable_block_append_attention();
+    const bool use_append_attention =
+        ::xllm::SchedulerConfig::get_instance().enable_chunked_prefill() ||
+        enable_block_append_attention_;
+    int32_t mask_value = use_append_attention ? -9984 : 1;
     attn_mask_ = layer::AttentionMask(options.device(),
                                       options.dtype().toScalarType(),
                                       /*mask_value=*/mask_value);
@@ -262,13 +264,21 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
     }
 
     torch::Tensor attn_mask;
-    // for chunked prefill, generate the attn mask.
+    // Generate an append-attention mask for scheduler chunking or an explicit
+    // block-diffusion verification input.
     if (!input_params.meta.batch_forward_type.is_decode()) {
+      const bool use_block_append_attention =
+          input_params.attention.use_block_append_attention;
+      CHECK(!use_block_append_attention || enable_block_append_attention_)
+          << "Qwen3-MoE block append attention was not enabled for this model.";
+      const bool use_append_attention =
+          ::xllm::SchedulerConfig::get_instance().enable_chunked_prefill() ||
+          enable_block_append_attention_;
       max_seq_len_ =
-          ::xllm::SchedulerConfig::get_instance().enable_chunked_prefill()
+          use_append_attention
               ? std::max(input_params.meta.kv_max_seq_len, max_seq_len_)
               : 128;
-      if (::xllm::SchedulerConfig::get_instance().enable_chunked_prefill()) {
+      if (use_append_attention) {
         attn_mask = attn_mask_.get_attn_mask(
             max_seq_len_, cos_pos.dtype().toScalarType(), cos_pos.device());
 
@@ -478,6 +488,7 @@ class Qwen3MoeModelImpl : public torch::nn::Module {
   torch::Dtype dtype_;
   layer::NpuWordEmbedding npu_embed_tokens_{nullptr};
   layer::AttentionMask attn_mask_;
+  bool enable_block_append_attention_ = false;
   layer::NpuRMSNorm norm_{nullptr};
   torch::Tensor cos_sin_;
   layer::NpuPosEmbedding atb_pos_emb_{nullptr};

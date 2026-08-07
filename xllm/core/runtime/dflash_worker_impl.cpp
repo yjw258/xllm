@@ -26,7 +26,6 @@ limitations under the License.
 #include "common/metrics.h"
 #include "core/framework/config/disagg_pd_config.h"
 #include "core/framework/config/kernel_config.h"
-#include "core/framework/config/scheduler_config.h"
 #include "core/framework/config/speculative_config.h"
 #include "framework/model/model_args.h"
 #include "framework/parallel_state/process_group.h"
@@ -297,13 +296,6 @@ DFlashWorkerImpl::DFlashWorkerImpl(const ParallelArgs& parallel_args,
 bool DFlashWorkerImpl::init_model(const std::string& model_weights_path,
                                   int32_t random_seed,
                                   MasterStatus master_status) {
-  // DFlash draft attends each block non-causally, which the shared QWen3 model
-  // only wires up on the chunked-prefill mask path. Without it the draft falls
-  // back to a causal mask and proposal quality silently degrades, so require
-  // the flag rather than accept a misconfigured run.
-  CHECK(::xllm::SchedulerConfig::get_instance().enable_chunked_prefill())
-      << "Block-diffusion speculative decoding requires "
-         "--enable_chunked_prefill=true.";
   bool result = true;
   const bool loading_target =
       impl_->get_status() == WorkerImpl::Status::UNINITIALIZED;
@@ -502,6 +494,7 @@ std::optional<ForwardOutput> DFlashWorkerImpl::step_empty(
   ForwardInput query_input = input;
   query_input.input_params.meta.batch_forward_type =
       BatchForwardType::CHUNKED_PREFILL;
+  query_input.input_params.attention.use_block_append_attention = true;
   query_input.input_params.meta.q_max_seq_len = query_width;
   scale_dp_global_token_nums(query_input.input_params, query_width);
   // Warmup only: prime the draft; its output is unused. Keep it alive until the
@@ -949,6 +942,8 @@ void DFlashWorkerImpl::prepare_validate_inputs(const ForwardInput& input,
   SpeculativeWorkerImpl::prepare_validate_inputs(prepared_input,
                                                  validate_input);
   validate_input.input_params.embedding.input_embedding = torch::Tensor();
+  validate_input.input_params.attention.use_block_append_attention =
+      validate_input.input_params.meta.batch_forward_type.is_chunked_prefill();
   record_metadata_ready_event(*prepare_stream_, validate_input);
 }
 
@@ -990,6 +985,7 @@ void DFlashWorkerImpl::prepare_query_inputs(const ForwardInput& input,
                                           input.token_ids.options(),
                                           input.positions.options());
   input_params.meta.batch_forward_type = BatchForwardType::CHUNKED_PREFILL;
+  input_params.attention.use_block_append_attention = true;
   specBuilder::update_input_params(input_params,
                                    buf,
                                    query_width,

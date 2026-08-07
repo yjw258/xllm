@@ -106,7 +106,8 @@ class NpuQwen3MoeDecoderLayerImpl : public BaseLayer {
                                KVCache& kv_cache,
                                const ModelInputParams& input_params,
                                bool is_prefill,
-                               bool use_graph_decode_input);
+                               bool use_graph_decode_input,
+                               bool use_q_seq_lens);
 
   torch::Tensor block_tables_placeholder_;
   std::string model_name_;
@@ -143,6 +144,7 @@ class NpuQwen3MoeDecoderLayerImpl : public BaseLayer {
   torch::Tensor slot_tensor_placeholder_;
   torch::Tensor int_tensor_placeholder_;
   torch::Tensor decode_attn_mask_;
+  bool enable_block_append_attention_ = false;
   torch::Tensor expert_group_;
   torch::Tensor quant_add_norm_scaling_;
   torch::Tensor quant_add_norm_offset_;

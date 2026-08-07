@@ -70,6 +70,10 @@ struct ModelArgs {
   // non-DSpark models).
   PROPERTY(int64_t, markov_rank) = 0;
 
+  // DFlash/DSpark target and draft models use a SplitFuse prefill graph for
+  // multi-token append attention independently of scheduler chunking.
+  PROPERTY(bool, enable_block_append_attention) = false;
+
   PROPERTY(bool, use_qk_norm) = false;
   PROPERTY(float, rms_norm_eps) = 0.0f;
 
