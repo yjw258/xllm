@@ -597,7 +597,25 @@ std::optional<ForwardOutput> DFlashWorkerImpl::step_empty(
 }
 
 std::optional<ForwardOutput> DFlashWorkerImpl::step_prefill(
-    const ForwardInput& input) {
+    const ForwardInput& raw_input) {
+  ForwardInput input = raw_input;
+  // Under DP, speculative decode runs only when every DP rank is in decode.
+  // Decode rows can therefore fall back to this target-only path, including
+  // rows inside a MIXED batch. Resolve schedule-overlap placeholders before
+  // the Python embedding lookup sees them as out-of-range token ids.
+  if (input.input_params.meta.batch_forward_type.has_decode()) {
+    CHECK(embedding_cache_ != nullptr)
+        << "DFlash embedding cache is not allocated";
+    std::vector<EmbeddingCache::DecodeState> last_states =
+        embedding_cache_->read_decode_states(
+            input.input_params.embedding.embedding_ids,
+            input.input_params.embedding.request_ids);
+    CHECK_EQ(last_states.size(),
+             input.input_params.embedding.embedding_ids.size())
+        << "DFlash fallback decode target state count mismatch";
+    update_decode_step_input(input, last_states);
+  }
+
   Timer timer;
   ForwardInput processed_target_input;
   ForwardOutput output = run_llm_no_sync_impl(*impl_,
@@ -1203,20 +1221,17 @@ void DFlashWorkerImpl::update_decode_step_input(
     ForwardInput& input,
     const std::vector<EmbeddingCache::DecodeState>& last_states) const {
   const int32_t num_sequences = input.input_params.meta.num_sequences;
-  CHECK_EQ(last_states.size(), static_cast<size_t>(num_sequences))
-      << "DFlash decode context state count mismatch";
+  const bool is_mixed = input.input_params.meta.batch_forward_type.is_mixed();
+  const std::vector<int32_t>& extra_token_ids =
+      input.input_params.embedding.extra_token_ids;
+  if (is_mixed) {
+    CHECK_EQ(extra_token_ids.size(), static_cast<size_t>(num_sequences))
+        << "DFlash mixed context extra token count mismatch";
+  } else {
+    CHECK_EQ(last_states.size(), static_cast<size_t>(num_sequences))
+        << "DFlash decode context state count mismatch";
+  }
   const bool enable_cache_correction = enable_schedule_overlap();
-
-  std::vector<int32_t> token_ids_vec;
-  std::vector<int32_t> positions_vec;
-  std::vector<int32_t> kv_seq_lens_vec;
-  token_ids_vec.reserve(num_sequences);
-  positions_vec.reserve(num_sequences);
-#if defined(USE_NPU)
-  kv_seq_lens_vec.reserve(num_sequences);
-#else
-  kv_seq_lens_vec.reserve(num_sequences + 1);
-#endif
 
   const torch::Tensor& token_ids_cpu = input.token_ids_host;
   const torch::Tensor& positions_cpu = input.positions_host;
@@ -1224,43 +1239,86 @@ void DFlashWorkerImpl::update_decode_step_input(
                                     static_cast<size_t>(token_ids_cpu.numel())};
   Slice<int32_t> input_positions = {positions_cpu.data_ptr<int32_t>(),
                                     static_cast<size_t>(positions_cpu.numel())};
+  CHECK_EQ(input_token_ids.size(), input_positions.size())
+      << "DFlash context token/position count mismatch";
 
+  std::vector<int32_t> token_ids_vec(input_token_ids.begin(),
+                                     input_token_ids.end());
+  std::vector<int32_t> positions_vec(input_positions.begin(),
+                                     input_positions.end());
+  std::vector<int32_t> kv_seq_lens_vec;
+#if defined(USE_NPU)
+  kv_seq_lens_vec.reserve(num_sequences);
+#else
+  kv_seq_lens_vec.reserve(num_sequences + 1);
+#endif
+
+  size_t token_offset = 0;
+  size_t state_idx = 0;
   for (int32_t seq_id = 0; seq_id < num_sequences; ++seq_id) {
-    CHECK_LT(static_cast<size_t>(seq_id), input_token_ids.size())
-        << "DFlash decode context token seq_id out of range, seq_id=" << seq_id;
-    CHECK_LT(static_cast<size_t>(seq_id), input_positions.size())
-        << "DFlash decode context position seq_id out of range, seq_id="
-        << seq_id;
-    const EmbeddingCache::DecodeState& state = last_states[seq_id];
-    const int32_t input_token_id = input_token_ids[seq_id];
-    const bool input_is_fake_token = input_token_id < 0;
-    // Rewrite fake input tokens to the last committed real token so KV cache
-    // scatter has a valid id; only apply the recorded position offset when the
-    // cached state is still valid.
-    const bool rewrite_fake_token =
-        enable_cache_correction && input_is_fake_token;
-    const bool use_cache_correction = rewrite_fake_token && state.valid;
-    const int32_t position_offset =
-        use_cache_correction ? state.position_offset : 0;
-    const int32_t current_position = input_positions[seq_id] + position_offset;
+    const int32_t q_seq_len = input.input_params.get_q_seq_len(seq_id);
+    CHECK_GT(q_seq_len, 0) << "DFlash context q_seq_len must be positive";
+    CHECK_LE(token_offset + static_cast<size_t>(q_seq_len),
+             input_token_ids.size())
+        << "DFlash context token row exceeds flattened input";
+
+    const bool has_decode_state = !is_mixed || extra_token_ids[seq_id] < 0;
+    const EmbeddingCache::DecodeState* state = nullptr;
+    if (has_decode_state) {
+      CHECK_LT(state_idx, last_states.size())
+          << "DFlash context state index out of range";
+      state = &last_states[state_idx++];
+    }
+
+    bool rewrote_fake_token = false;
+    int32_t position_offset = 0;
+    for (int32_t query_idx = 0; query_idx < q_seq_len; ++query_idx) {
+      const size_t row_idx = token_offset + static_cast<size_t>(query_idx);
+      if (input_token_ids[row_idx] >= 0) {
+        continue;
+      }
+
+      CHECK(enable_cache_correction)
+          << "DFlash fake token requires schedule overlap";
+      CHECK_EQ(q_seq_len, 1)
+          << "DFlash fake token is only valid for a decode row";
+      CHECK(state != nullptr)
+          << "DFlash fake token has no matching decode state";
+      // Rewrite the overlap placeholder to the last committed target token.
+      // Apply its accepted-prefix offset only when the cached state is valid.
+      token_ids_vec[row_idx] = state->token_id;
+      rewrote_fake_token = true;
+      if (state->valid) {
+        position_offset = state->position_offset;
+        positions_vec[row_idx] += position_offset;
+      }
+    }
+
     const int32_t current_kv_len = specBuilder::calc_kv_len(
         input.input_params.attention.host.kv_seq_lens, seq_id, position_offset);
-    const int32_t expected_kv_len = current_position + 1;
-
-    CHECK_EQ(expected_kv_len, current_kv_len)
-        << "DFlash decode context position/kv_len mismatch, seq_id=" << seq_id
-        << ", current_position=" << current_position
-        << ", current_kv_len=" << current_kv_len;
-
-    token_ids_vec.emplace_back(rewrite_fake_token ? state.token_id
-                                                  : input_token_id);
-    positions_vec.emplace_back(current_position);
+    if (rewrote_fake_token) {
+      const int32_t current_position = positions_vec[token_offset];
+      CHECK_EQ(current_position + 1, current_kv_len)
+          << "DFlash decode context position/kv_len mismatch, seq_id=" << seq_id
+          << ", current_position=" << current_position
+          << ", current_kv_len=" << current_kv_len;
+    }
     specBuilder::append_seq_len_by_layout(kv_seq_lens_vec, current_kv_len);
+    token_offset += static_cast<size_t>(q_seq_len);
   }
+
+  CHECK_EQ(token_offset, input_token_ids.size())
+      << "DFlash context flattened token count mismatch";
+  CHECK_EQ(state_idx, last_states.size())
+      << "DFlash context state count mismatch";
 
   input.token_ids_host = specBuilder::make_cpu_int_tensor(token_ids_vec);
   input.positions_host = specBuilder::make_cpu_int_tensor(positions_vec);
   input.input_params.attention.host.kv_seq_lens = std::move(kv_seq_lens_vec);
+  // DP RPC/SHM inputs retain a packed host-buffer layout. The token and
+  // position views above no longer match that serialized payload, so force
+  // ForwardInput::to() to rebuild the device buffer from the updated views.
+  input.input_host_buffer_has_layout = false;
   input.device_tensors_ready = false;
 }
 
