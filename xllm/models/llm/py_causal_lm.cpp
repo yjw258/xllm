@@ -242,6 +242,7 @@ py::dict PyCausalLM::build_config_dict(
   d["cp_rank"] = cp_rank_;
   const bool requires_eager_execution =
       !model_args_.layers_to_capture().empty() ||
+      model_args_.model_type() == "DFlashDraftModel" ||
       model_args_.model_type() == "DSparkDraftModel";
   d["enable_graph"] = requires_eager_execution
                           ? false

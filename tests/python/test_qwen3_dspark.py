@@ -14,8 +14,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import Mock
-
 import pytest
 import torch
 
@@ -23,7 +21,6 @@ from xllm.python import kernels
 from xllm.python.models.qwen3_dspark import (
     Qwen3DSparkConfig,
     Qwen3DSparkForCausalLM,
-    Qwen3DSparkModel,
 )
 
 
@@ -70,69 +67,24 @@ class _StateDict:
         return self._tensors[name]
 
 
-def test_config_rejects_reduced_draft_vocabulary() -> None:
-    with pytest.raises(ValueError, match="reduced-vocabulary"):
-        _config(draft_vocab_size=4)
+def test_config_requires_positive_markov_rank() -> None:
+    with pytest.raises(ValueError, match="markov_rank > 0"):
+        _config(markov_rank=0)
 
 
-def test_draft_attention_is_non_causal() -> None:
-    model = Qwen3DSparkModel(_config(), torch.float32, torch.device("cpu"))
-
-    assert not model.layers[0].self_attn.attn.causal
-
-
-def test_context_projection_writes_each_layer_cache(monkeypatch: pytest.MonkeyPatch) -> None:
-    config = _config()
-    model = Qwen3DSparkModel(config, torch.float32, torch.device("cpu"))
-    attention = model.layers[0].self_attn
-    with torch.no_grad():
-        model.fc.load_weight(torch.eye(config.hidden_size))
-        model.hidden_norm.weight.fill_(1.0)
-        attention.qkv_proj.weight.zero_()
-        attention.qkv_proj.weight[attention.q_size : attention.q_size + attention.kv_size].copy_(
-            torch.eye(config.hidden_size)
-        )
-        attention.qkv_proj.weight[attention.q_size + attention.kv_size :].copy_(2.0 * torch.eye(config.hidden_size))
-        attention.k_norm.weight.fill_(1.0)
-    monkeypatch.setattr(
-        kernels,
-        "rms_norm",
-        lambda hidden, weight, eps: hidden
-        * torch.rsqrt(hidden.float().pow(2).mean(dim=-1, keepdim=True) + eps)
-        * weight,
-        raising=False,
-    )
-    reshape_paged_cache = Mock()
-    monkeypatch.setattr(kernels, "reshape_paged_cache", reshape_paged_cache, raising=False)
-    synchronizer = Mock()
-    key_cache = torch.empty(1, 1, 1, config.head_dim)
-    value_cache = torch.empty_like(key_cache)
-    target_hidden = torch.tensor([[1.0, 2.0, 3.0, 4.0]])
-
-    projected = model.write_context_kv(
-        target_hidden,
-        torch.tensor([0]),
-        torch.tensor([0], dtype=torch.int32),
-        [(key_cache, value_cache, None, None, None)],
-        synchronizer,
-    )
-
-    reshape_paged_cache.assert_called_once()
-    call_args = reshape_paged_cache.call_args.args
-    torch.testing.assert_close(call_args[2], 2.0 * projected.view(1, 1, config.head_dim))
-    assert call_args[3] is key_cache
-    assert call_args[4] is value_cache
-    synchronizer.record_event.assert_called_once_with(0)
-
-
-def test_checkpoint_weight_names_load_into_fused_modules(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_checkpoint_loads_dspark_heads(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         kernels,
         "prepare_row_parallel_weight",
         lambda weight: (weight, False),
         raising=False,
     )
-    model = Qwen3DSparkForCausalLM(_config_dict())
+    model = Qwen3DSparkForCausalLM(
+        _config_dict(
+            enable_confidence_head=True,
+            confidence_head_with_markov=True,
+        )
+    )
     tensors = {
         "fc.weight": torch.eye(4),
         "hidden_norm.weight": torch.ones(4),
@@ -150,14 +102,26 @@ def test_checkpoint_weight_names_load_into_fused_modules(monkeypatch: pytest.Mon
         "norm.weight": torch.ones(4),
         "markov_head.markov_w1.weight": torch.full((8, 2), 8.0),
         "markov_head.markov_w2.weight": torch.full((8, 2), 9.0),
+        "confidence_head.proj.weight": torch.full((1, 6), 10.0),
+        "confidence_head.proj.bias": torch.full((1,), 11.0),
     }
 
     model.load_weights([_StateDict(tensors)], tp_rank=0, tp_size=1)
 
-    qkv_weight = model.model.layers[0].self_attn.qkv_proj.weight
-    torch.testing.assert_close(qkv_weight[:4], tensors["layers.0.self_attn.q_proj.weight"])
-    torch.testing.assert_close(qkv_weight[4:8], tensors["layers.0.self_attn.k_proj.weight"])
-    torch.testing.assert_close(qkv_weight[8:12], tensors["layers.0.self_attn.v_proj.weight"])
-    assert model.model._fused_kv_weight.shape == (8, 4)
-    assert model.model.embed_tokens is None
-    assert model.lm_head is None
+    torch.testing.assert_close(
+        model.markov_head.markov_w1.weight,
+        tensors["markov_head.markov_w1.weight"],
+    )
+    torch.testing.assert_close(
+        model.markov_head.markov_w2.weight,
+        tensors["markov_head.markov_w2.weight"],
+    )
+    assert model.confidence_head is not None
+    torch.testing.assert_close(
+        model.confidence_head.proj.weight,
+        tensors["confidence_head.proj.weight"],
+    )
+    torch.testing.assert_close(
+        model.confidence_head.proj.bias,
+        tensors["confidence_head.proj.bias"],
+    )

@@ -228,11 +228,12 @@ class Qwen3DecoderLayer(nn.Module):
         layer_id: int,
         dtype: torch.dtype,
         device: torch.device,
+        causal: bool = True,
     ) -> None:
         super().__init__()
         self.layer_id = layer_id
         self.input_layernorm = RMSNorm(cfg.hidden_size, cfg.rms_norm_eps, dtype=dtype, device=device)
-        self.self_attn = Qwen3Attention(cfg, layer_id, dtype, device)
+        self.self_attn = Qwen3Attention(cfg, layer_id, dtype, device, causal=causal)
         self.post_attention_layernorm = RMSNorm(cfg.hidden_size, cfg.rms_norm_eps, dtype=dtype, device=device)
         self.mlp = GatedMLP(
             cfg.hidden_size,
