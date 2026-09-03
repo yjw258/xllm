@@ -115,7 +115,7 @@ class Qwen3_5SparseMoEBlock(nn.Module):
         shared_gate = torch.sigmoid(self.shared_expert_gate(hidden))
         output = routed + shared * shared_gate
         if self.fuse_reductions:
-            distributed.all_reduce_(output)
+            distributed.tp_all_reduce(output)
         return output
 
 

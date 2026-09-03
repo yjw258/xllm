@@ -128,25 +128,25 @@ def test_context_projection_uses_tensor_parallel_output_shard(
     weight = torch.arange(12, dtype=torch.float32).view(4, 3)
     hidden = torch.tensor([[1.0, 2.0, 3.0]])
     rank_zero_output = torch.nn.functional.linear(hidden, weight[:2])
-    all_gather = Mock(
+    tp_all_gather = Mock(
         side_effect=lambda local_output, **_: torch.cat(
             (rank_zero_output, local_output),
             dim=-1,
         )
     )
-    monkeypatch.setattr(distributed, "all_gather", all_gather, raising=False)
+    monkeypatch.setattr(distributed, "tp_all_gather", tp_all_gather, raising=False)
 
     projection.load_weight(weight, tp_rank=1)
     output = projection(hidden)
 
     torch.testing.assert_close(projection.weight, weight[2:])
     torch.testing.assert_close(output, torch.nn.functional.linear(hidden, weight))
-    all_gather.assert_called_once()
+    tp_all_gather.assert_called_once()
     torch.testing.assert_close(
-        all_gather.call_args.args[0],
+        tp_all_gather.call_args.args[0],
         torch.nn.functional.linear(hidden, weight[2:]),
     )
-    assert all_gather.call_args.kwargs == {"dim": -1, "world_size": 2}
+    assert tp_all_gather.call_args.kwargs == {"dim": -1, "world_size": 2}
 
 
 def test_context_projection_writes_each_layer_cache(

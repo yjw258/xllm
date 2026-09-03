@@ -157,9 +157,9 @@ class FusedMoE(nn.Module):
             raise NotImplementedError("pre-SM90 Python MoE fallback does not support TP or EP")
         if self.reduce_results:
             if self.moe_tp_size > 1:
-                distributed.all_reduce_(output, "moe_tp")
+                distributed.moe_tp_all_reduce(output)
             if self.ep_size > 1:
-                distributed.all_reduce_(output, "moe_ep")
+                distributed.moe_ep_all_reduce(output)
         if use_compact_gather:
             offset = sum(token_counts[: self.dp_rank])
             output = output.narrow(0, offset, local_tokens)

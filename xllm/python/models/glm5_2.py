@@ -414,7 +414,7 @@ class Glm52MLAAttention(Attention):
         v_full = v_full.reshape(num_tokens, self.num_heads_local * self.v_head_dim)
         o = self.o_proj(v_full)
         if self.cfg.tp_size > 1:
-            distributed.all_reduce_(o)
+            distributed.tp_all_reduce(o)
         return o, topk
 
 

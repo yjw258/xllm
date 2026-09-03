@@ -93,99 +93,93 @@ PyCausalLM::PyCausalLM(const ModelContext& context)
   ensure_python_interpreter();
 
   const ParallelArgs& parallel_args = context.get_parallel_args();
-  tp_group_ = parallel_args.tp_group_;
-  cp_size_ = parallel_args.cp_size();
-  cp_rank_ = parallel_args.cp_rank();
-  // tp_group_ and cp_group_ are already the final, orthogonally-split groups:
-  // the collective communicator narrows tp_group_ to world/(dp*cp) and builds a
-  // separate cp_group_ over the cp-strided ranks. Read each dimension from its
-  // own group instead of carving CP back out of tp_group_. TP and CP are
-  // orthogonal: a rank can shard both attention heads (TP) and sequence tokens
-  // (CP) at once, so both dimensions may be > 1 simultaneously.
-  tp_size_ = (tp_group_ != nullptr) ? tp_group_->world_size() : 1;
-  tp_rank_ = (tp_group_ != nullptr) ? tp_group_->rank() : 0;
+  const int32_t global_rank = parallel_args.rank();
+  const int32_t global_world_size = parallel_args.world_size();
+  ProcessGroup* tp_group = parallel_args.tp_group_;
+  tp_size_ = tp_group != nullptr ? tp_group->world_size() : 1;
+  tp_rank_ = tp_group != nullptr ? tp_group->rank() : 0;
   ProcessGroup* dp_group = parallel_args.dp_local_process_group_;
-  dp_size_ = (dp_group != nullptr) ? dp_group->world_size() : 1;
-  dp_rank_ = (dp_group != nullptr) ? dp_group->rank() : 0;
+  dp_size_ = dp_group != nullptr ? dp_group->world_size() : 1;
+  dp_rank_ = dp_group != nullptr ? dp_group->rank() : 0;
+  cp_size_ = parallel_args.cp_size();
+  if (cp_size_ > 1) {
+    CHECK(parallel_args.cp_group_ != nullptr);
+    CHECK_EQ(parallel_args.cp_group_->world_size(), cp_size_);
+    cp_rank_ = parallel_args.cp_group_->rank();
+  }
   ep_size_ = parallel_args.ep_size();
-
   CHECK(parallel_args.moe_tp_group_ != nullptr);
-  moe_tp_group_ = parallel_args.moe_tp_group_;
+  ProcessGroup* moe_tp_group = parallel_args.moe_tp_group_;
+  moe_tp_size_ = moe_tp_group->world_size();
+  moe_tp_rank_ = moe_tp_group->rank();
   if (ep_size_ > 1) {
     CHECK(parallel_args.moe_ep_group_ != nullptr);
-    moe_ep_group_ = parallel_args.moe_ep_group_;
+    CHECK_EQ(parallel_args.moe_ep_group_->world_size(), ep_size_);
+    ep_rank_ = parallel_args.moe_ep_group_->rank();
   }
-  moe_tp_size_ = (moe_tp_group_ != nullptr) ? moe_tp_group_->world_size() : 1;
-  moe_tp_rank_ = (moe_tp_group_ != nullptr) ? moe_tp_group_->rank() : 0;
-  ep_rank_ = (moe_ep_group_ != nullptr) ? moe_ep_group_->rank() : 0;
 
   py::gil_scoped_acquire gil;
-  if (model_args_.model_type() != "deepseek_v4") {
-    py::object init_process_group =
-        py::module_::import("xllm.python.distributed")
-            .attr("init_process_group");
-    CHECK(!parallel_args.python_rendezvous_host_.empty());
-    CHECK_GT(parallel_args.python_rendezvous_port_, 0);
-    const int32_t global_rank = parallel_args.rank();
-    const int32_t global_world_size = parallel_args.world_size();
-    if (tp_size_ > 1) {
-      init_process_group("tp",
-                         parallel_args.python_rendezvous_host_,
-                         parallel_args.python_rendezvous_port_,
-                         tp_rank_,
-                         tp_size_,
-                         c10::str(device_),
-                         global_rank,
-                         global_world_size,
-                         global_rank / tp_size_);
-    }
-    if (dp_size_ > 1) {
-      init_process_group("dp",
-                         parallel_args.python_rendezvous_host_,
-                         parallel_args.python_rendezvous_port_,
-                         dp_rank_,
-                         dp_size_,
-                         c10::str(device_),
-                         global_rank,
-                         global_world_size,
-                         global_rank % tp_size_);
-    }
-    if (moe_tp_size_ > 1) {
-      init_process_group("moe_tp",
-                         parallel_args.python_rendezvous_host_,
-                         parallel_args.python_rendezvous_port_,
-                         moe_tp_rank_,
-                         moe_tp_size_,
-                         c10::str(device_),
-                         global_rank,
-                         global_world_size,
-                         global_rank / moe_tp_size_);
-    }
-    if (ep_size_ > 1) {
-      init_process_group("moe_ep",
-                         parallel_args.python_rendezvous_host_,
-                         parallel_args.python_rendezvous_port_,
-                         ep_rank_,
-                         ep_size_,
-                         c10::str(device_),
-                         global_rank,
-                         global_world_size,
-                         global_rank % moe_tp_size_);
-    }
-    if (cp_size_ > 1) {
-      const int32_t cp_group_index =
-          (global_rank / (cp_size_ * tp_size_)) * tp_size_ +
-          global_rank % tp_size_;
-      init_process_group("cp",
-                         parallel_args.python_rendezvous_host_,
-                         parallel_args.python_rendezvous_port_,
-                         cp_rank_,
-                         cp_size_,
-                         c10::str(device_),
-                         global_rank,
-                         global_world_size,
-                         cp_group_index);
-    }
+  py::object init_process_group =
+      py::module_::import("xllm.python.distributed").attr("init_process_group");
+  CHECK(!parallel_args.python_rendezvous_host_.empty());
+  CHECK_GT(parallel_args.python_rendezvous_port_, 0);
+  if (tp_size_ > 1) {
+    init_process_group("tp",
+                       parallel_args.python_rendezvous_host_,
+                       parallel_args.python_rendezvous_port_,
+                       tp_rank_,
+                       tp_size_,
+                       c10::str(device_),
+                       global_rank,
+                       global_world_size,
+                       global_rank / tp_size_);
+  }
+  if (dp_size_ > 1) {
+    init_process_group("dp",
+                       parallel_args.python_rendezvous_host_,
+                       parallel_args.python_rendezvous_port_,
+                       dp_rank_,
+                       dp_size_,
+                       c10::str(device_),
+                       global_rank,
+                       global_world_size,
+                       global_rank % tp_size_);
+  }
+  if (moe_tp_size_ > 1) {
+    init_process_group("moe_tp",
+                       parallel_args.python_rendezvous_host_,
+                       parallel_args.python_rendezvous_port_,
+                       moe_tp_rank_,
+                       moe_tp_size_,
+                       c10::str(device_),
+                       global_rank,
+                       global_world_size,
+                       global_rank / moe_tp_size_);
+  }
+  if (ep_size_ > 1) {
+    init_process_group("moe_ep",
+                       parallel_args.python_rendezvous_host_,
+                       parallel_args.python_rendezvous_port_,
+                       ep_rank_,
+                       ep_size_,
+                       c10::str(device_),
+                       global_rank,
+                       global_world_size,
+                       global_rank % moe_tp_size_);
+  }
+  if (cp_size_ > 1) {
+    const int32_t cp_group_index =
+        (global_rank / (cp_size_ * tp_size_)) * tp_size_ +
+        global_rank % tp_size_;
+    init_process_group("cp",
+                       parallel_args.python_rendezvous_host_,
+                       parallel_args.python_rendezvous_port_,
+                       cp_rank_,
+                       cp_size_,
+                       c10::str(device_),
+                       global_rank,
+                       global_world_size,
+                       cp_group_index);
   }
   const std::string module_name = context.get_model_args().model_type().empty()
                                       ? std::string("Qwen3ForCausalLM")
@@ -330,52 +324,6 @@ torch::Tensor PyCausalLM::dspark_confidence_probs(
 bool PyCausalLM::has_dspark_confidence_head() const {
   py::gil_scoped_acquire gil;
   return py_model_.attr("has_dspark_confidence_head")().cast<bool>();
-}
-
-void PyCausalLM::tp_all_reduce(torch::Tensor& tensor) {
-  if (tp_group_ != nullptr) {
-    tp_group_->allreduce(tensor);
-  }
-}
-
-torch::Tensor PyCausalLM::tp_all_gather(const torch::Tensor& tensor,
-                                        int64_t dim) {
-  if (tp_group_ == nullptr) {
-    return tensor;
-  }
-  auto gathered = tp_group_->allgather_base_sync(tensor);
-  const int64_t world_size = tp_group_->world_size();
-  const int64_t ndim = tensor.dim();
-  if (dim < 0) {
-    dim += ndim;
-  }
-  CHECK(dim >= 0 && dim < ndim)
-      << "tensor-parallel gather dimension out of range: " << dim;
-  std::vector<int64_t> permutation;
-  permutation.reserve(static_cast<size_t>(ndim + 1));
-  for (int64_t index = 1; index <= dim; ++index) {
-    permutation.push_back(index);
-  }
-  permutation.push_back(0);
-  for (int64_t index = dim + 1; index < ndim + 1; ++index) {
-    permutation.push_back(index);
-  }
-  gathered = gathered.permute(permutation);
-  auto output_shape = tensor.sizes().vec();
-  output_shape[dim] *= world_size;
-  return gathered.reshape(output_shape).contiguous();
-}
-
-void PyCausalLM::moe_tp_all_reduce(torch::Tensor& tensor) {
-  if (moe_tp_group_ != nullptr) {
-    moe_tp_group_->allreduce(tensor);
-  }
-}
-
-void PyCausalLM::moe_ep_all_reduce(torch::Tensor& tensor) {
-  if (moe_ep_group_ != nullptr) {
-    moe_ep_group_->allreduce(tensor);
-  }
 }
 
 bool PyCausalLM::share_weights_from(CausalLM& source) {

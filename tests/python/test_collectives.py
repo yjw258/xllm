@@ -18,9 +18,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import sys
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -126,40 +124,44 @@ def test_parallel_groups_share_one_multitenant_tcp_store(monkeypatch):
     ]
 
 
-def test_native_runtime_bridge_bypasses_python_process_groups(monkeypatch):
-    calls: list[str] = []
-
-    runtime = SimpleNamespace(
-        tp_all_reduce=lambda tensor: (calls.append("tp_reduce"), tensor.add_(1)),
-        tp_all_gather=lambda tensor, dim: (
-            calls.append(f"tp_gather:{dim}"),
-            torch.cat((tensor, tensor), dim=dim),
-        )[1],
-        moe_tp_all_reduce=lambda tensor: (
-            calls.append("moe_tp_reduce"),
-            tensor.add_(2),
-        ),
-        moe_ep_all_reduce=lambda tensor: (
-            calls.append("moe_ep_reduce"),
-            tensor.add_(4),
-        ),
-    )
-    monkeypatch.setitem(sys.modules, "xllm_runtime", runtime)
-    python_reduce = MagicMock(side_effect=AssertionError("c10d fallback used"))
-    python_gather = MagicMock(side_effect=AssertionError("c10d fallback used"))
+@pytest.mark.parametrize(
+    ("wrapper", "group_name"),
+    [
+        (collectives.tp_all_reduce, "tp"),
+        (collectives.moe_tp_all_reduce, "moe_tp"),
+        (collectives.moe_ep_all_reduce, "moe_ep"),
+    ],
+)
+def test_all_reduce_wrappers_use_python_process_groups(monkeypatch, wrapper, group_name):
+    python_reduce = MagicMock()
     monkeypatch.setattr(collectives, "all_reduce_", python_reduce)
-    monkeypatch.setattr(collectives, "all_gather", python_gather)
-
     value = torch.tensor([[1.0]])
-    collectives.tp_all_reduce(value)
-    gathered = collectives.tp_all_gather(value, 1, 2)
-    collectives.moe_tp_all_reduce(value)
-    collectives.moe_ep_all_reduce(value)
 
-    assert calls == ["tp_reduce", "tp_gather:1", "moe_tp_reduce", "moe_ep_reduce"]
-    assert gathered.tolist() == [[2.0, 2.0]]
-    assert value.tolist() == [[8.0]]
-    python_reduce.assert_not_called()
+    wrapper(value)
+
+    python_reduce.assert_called_once_with(value, group_name)
+
+
+def test_tp_all_gather_uses_python_process_group(monkeypatch):
+    gathered = torch.tensor([[1.0, 2.0]])
+    python_gather = MagicMock(return_value=gathered)
+    monkeypatch.setattr(collectives, "all_gather", python_gather)
+    value = torch.tensor([[1.0]])
+
+    output = collectives.tp_all_gather(value, 1, 2)
+
+    assert output is gathered
+    python_gather.assert_called_once_with(value, 1, 2, "tp")
+
+
+def test_tp_all_gather_skips_single_rank_group(monkeypatch):
+    python_gather = MagicMock()
+    monkeypatch.setattr(collectives, "all_gather", python_gather)
+    value = torch.tensor([[1.0]])
+
+    output = collectives.tp_all_gather(value, 1, 1)
+
+    assert output is value
     python_gather.assert_not_called()
 
 

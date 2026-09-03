@@ -867,7 +867,7 @@ class DeepseekV3MLAAttention(Attention):
         v_full = v_full.reshape(hidden.shape[0], self.num_heads_local * self.v_head_dim)
         output = self.o_proj(v_full)
         if self.cfg.tp_size > 1:
-            distributed.all_reduce_(output)
+            distributed.tp_all_reduce(output)
         return output
 
     def forward(
@@ -941,7 +941,7 @@ class DeepseekV3MLAAttention(Attention):
         v_full = v_full.reshape(num_tokens, self.num_heads_local * self.v_head_dim)
         o = self.o_proj(v_full)
         if self.cfg.tp_size > 1:
-            distributed.all_reduce_(o)
+            distributed.tp_all_reduce(o)
         return o
 
 
@@ -1254,13 +1254,13 @@ class DeepseekV3MoE(nn.Module):
         shared: torch.Tensor,
     ) -> torch.Tensor:
         if self.ep_size > 1:
-            distributed.all_reduce_(routed, "moe_ep")
+            distributed.moe_ep_all_reduce(routed)
 
         final = routed + shared
         if self.moe_tp_size > 1:
-            distributed.all_reduce_(final, "moe_tp")
+            distributed.moe_tp_all_reduce(final)
         elif self.cfg.tp_size > 1 and self.ep_size == 1:
-            distributed.all_reduce_(final)
+            distributed.tp_all_reduce(final)
         return final
 
     def _ensure_expert_parallel_resources(self) -> None:

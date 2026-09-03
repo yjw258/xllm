@@ -42,8 +42,10 @@ kernels.dynamic_quant = MagicMock()
 kernels.quant_matmul = MagicMock()
 kernels.silu_and_mul = MagicMock()
 distributed.all_gather_variable = MagicMock()
-distributed.all_reduce_ = MagicMock()
 distributed.all_gather = MagicMock(side_effect=lambda x, **kw: x)
+distributed.tp_all_reduce = MagicMock()
+distributed.moe_tp_all_reduce = MagicMock()
+distributed.moe_ep_all_reduce = MagicMock()
 distributed.tp_rank = MagicMock(return_value=0)
 
 from xllm.python.model_executor.forward_context import (  # noqa: E402
@@ -221,7 +223,9 @@ class TestDeepseekV3MoEForward:
     def setup_method(self):
         distributed.all_gather.reset_mock()
         distributed.all_gather.side_effect = lambda x, **kw: x.repeat(kw.get("world_size", 1), *([1] * (x.dim() - 1)))
-        distributed.all_reduce_.reset_mock()
+        distributed.tp_all_reduce.reset_mock()
+        distributed.moe_tp_all_reduce.reset_mock()
+        distributed.moe_ep_all_reduce.reset_mock()
         kernels.grouped_moe.reset_mock()
 
     @staticmethod
@@ -268,8 +272,7 @@ class TestDeepseekV3MoEForward:
         with forward_context(ctx):
             moe.forward(hidden)
 
-        reduce_calls = [c for c in distributed.all_reduce_.call_args_list if c[0][1] == "moe_ep"]
-        assert len(reduce_calls) == 1
+        distributed.moe_ep_all_reduce.assert_called_once()
 
     def test_ep1_no_ep_allreduce(self):
         moe = _make_moe(ep_size=1)
@@ -281,8 +284,7 @@ class TestDeepseekV3MoEForward:
         with forward_context(ctx):
             moe.forward(hidden)
 
-        reduce_calls = [c for c in distributed.all_reduce_.call_args_list if len(c[0]) > 1 and c[0][1] == "moe_ep"]
-        assert len(reduce_calls) == 0
+        distributed.moe_ep_all_reduce.assert_not_called()
 
     def test_moe_tp_calls_allreduce(self):
         moe = _make_moe(moe_tp_size=2, ep_size=2, ep_rank=0)
@@ -294,8 +296,7 @@ class TestDeepseekV3MoEForward:
         with forward_context(ctx):
             moe.forward(hidden)
 
-        reduce_calls = [c for c in distributed.all_reduce_.call_args_list if len(c[0]) > 1 and c[0][1] == "moe_tp"]
-        assert len(reduce_calls) == 1
+        distributed.moe_tp_all_reduce.assert_called_once()
 
     def test_grouped_moe_active_range_ep2_rank1(self):
         moe = _make_moe(ep_size=2, ep_rank=1, n_experts=16)

@@ -105,7 +105,7 @@ class DFlashContextProjection(nn.Module):
             raise ValueError("target auxiliary hidden size does not match the draft fc.weight")
         output = F.linear(hidden, self.weight)
         if self.tp_size > 1:
-            output = distributed.all_gather(
+            output = distributed.tp_all_gather(
                 output,
                 dim=-1,
                 world_size=self.tp_size,
